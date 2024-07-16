@@ -9,6 +9,8 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <ctype.h>
+
 
 #define BUF_LEN (10 * (sizeof(struct inotify_event) + NAME_MAX + 1))
 
@@ -17,7 +19,6 @@ int prev_ptime = 0;  // Variable to hold the previous ptime
 
 void* timesend(void* arg) {
     int target_time = *(int*)arg; // Retrieve the time sent in the argument
-    free(arg); // Free the allocated memory for this time
     
     uint32_t obc_time, cur_time, f_time;
     obc_time = (uint32_t)time(NULL);
@@ -78,30 +79,76 @@ void read_file_content(const char *filename) {
 
             // Check if the line is not a comment
             if (token[0] != '#') {
-                // Use sscanf to parse data from token (each line)
-                sscanf(token, "%d\t%d\t%d\t%d\t%d", &ptime, &type_id, &module_id, &ttc_id, &parameter);
-                // Print parsed values
-                printf("Time: %d\n", ptime);
-                printf("Type ID: %d\n", type_id);
-                printf("Module ID: %d\n", module_id);
-                printf("TTC ID: %d\n", ttc_id);
-                printf("Parameter: %d\n", parameter);
-                printf("-------------------------------------------\n");
-                if (ptime < 1700000000) {
+                if (token[0] == '+' && isdigit(token[1])) {
+                    // Use sscanf to parse data from token (each line)
+                    sscanf(token, "%d\t%d\t%d\t%d\t%d", &ptime, &type_id, &module_id, &ttc_id, &parameter);
+                    // Print parsed values
+                    printf("Time: %d\n", ptime);
+                    printf("Type ID: %d\n", type_id);
+                    printf("Module ID: %d\n", module_id);
+                    printf("TTC ID: %d\n", ttc_id);
+                    printf("Parameter: %d\n", parameter);
+                    printf("-------------------------------------------\n");
+                    
                     if (prev_ptime == 0){
                         prev_ptime += obc_time;
                     }
                     ptime += prev_ptime; // Add previous time to relative time
+                    pthread_t timesend_thread;
+                    int *ptime_copy = malloc(sizeof(int));
+                    *ptime_copy = ptime; // Copy ptime to avoid race conditions
+                    pthread_create(&timesend_thread, NULL, timesend, ptime_copy);
+    
+                    prev_ptime = ptime; // Update prev_ptime after creating the thread
                 }
-
-                pthread_t timesend_thread;
-                int *ptime_copy = malloc(sizeof(int));
-                *ptime_copy = ptime; // Copy ptime to avoid race conditions
-                pthread_create(&timesend_thread, NULL, timesend, ptime_copy);
-
-                prev_ptime = ptime; // Update prev_ptime after creating the thread
+                else if(token[0] != '+'){
+                    // Use sscanf to parse data from token (each line)
+                    sscanf(token, "%d\t%d\t%d\t%d\t%d", &ptime, &type_id, &module_id, &ttc_id, &parameter);
+                    // Print parsed values
+                    printf("Time: %d\n", ptime);
+                    printf("Type ID: %d\n", type_id);
+                    printf("Module ID: %d\n", module_id);
+                    printf("TTC ID: %d\n", ttc_id);
+                    printf("Parameter: %d\n", parameter);
+                    printf("-------------------------------------------\n");
+    
+                    pthread_t timesend_thread;
+                    int *ptime_copy = malloc(sizeof(int));                    
+                    *ptime_copy = ptime; // Copy ptime to avoid race conditions
+                    pthread_create(&timesend_thread, NULL, timesend, ptime_copy);
+    
+                    prev_ptime = ptime; // Update prev_ptime after creating the thread
+                }
+                else { 
+                    printf("Reject Syntax at line %d: %s\n", line_count, token);
+                    close(fd);
+                    const char *newExtension = ".man";
+                    char newFilename[256]; 
+                    char *dot;
+                
+                    strcpy(newFilename, filename);
+                
+                    dot = strrchr(newFilename, '.');
+                
+                    if (dot != NULL) {
+                        *dot = '\0';
+                    }
+                
+                    // Rename
+                    strcat(newFilename, newExtension);
+                
+                    if (rename(filename, newFilename) == 0) {
+                        printf("New file name: %s\n", newFilename);
+                    } else {
+                        perror("Failed to rename");
+                    }
+                
+                    printf("\n");
+                    return;
+                }
+                
             }
-            // Get the next line
+            // Get the next line 
             token = strtok(NULL, "\n");
         }
     }
@@ -144,10 +191,10 @@ void handle_event(struct inotify_event *i, const char *watched_dir) {
 
     if (i->mask & IN_CREATE) {
         // Check if the file path is the same as the last created file
-        if (strcmp(full_path, last_created_file) == 0) {
-            printf("File %s was created again. Skipping.\n", full_path);
-            return;
-        }
+//        if (strcmp(full_path, last_created_file) == 0) {
+//            printf("File %s was created again. Skipping.\n", full_path);
+//            return;
+//        }
 
         printf("The file %s was created.\n", full_path);
         sleep(1); // Wait for a second to ensure the file is written
@@ -182,17 +229,46 @@ void handle_event(struct inotify_event *i, const char *watched_dir) {
                 sscanf(line, "%d,%d", &plan_num, &plan_date);
                 printf("Plan Number: %d\n", plan_num);
                 printf("Plan Date: %d\n", plan_date);
+                printf("Last Plan Number: %d\n", last_plan_num);
+                printf("Last Plan Date: %d\n", last_plan_date);
 
                 // Check if plan_num or plan_date has changed
-                if (plan_num != last_plan_num || plan_date != last_plan_date) {
+                if (plan_date <= last_plan_date || plan_num <= last_plan_num) {
+                    printf("Reject plan.\n");
+                    //fclose(file);
+                    const char *newExtension = ".man";
+                    char newFilename[256]; 
+                    char *dot;
+                
+                    strcpy(newFilename, full_path);
+                
+                    dot = strrchr(newFilename, '.');
+                
+                    if (dot != NULL) {
+                        *dot = '\0';
+                    }
+                
+                    // Rename
+                    strcat(newFilename, newExtension);
+                
+                    if (rename(full_path, newFilename) == 0) {
+                        printf("New file name: %s\n", newFilename);
+                    } else {
+                        perror("Failed to rename");
+                    }
+                
+                    printf("\n");
+                }
+                else if (plan_num != last_plan_num || plan_date != last_plan_date) {
                     // Update last created file and its content
-                    strcpy(last_created_file, full_path);
+                    strcpy(last_created_file, full_path); 
                     last_plan_num = plan_num;
                     last_plan_date = plan_date;
                     read_file_content(full_path);
-                } else {
-                    printf("Reject plan.\n");
                 }
+                else {
+                    printf("Reject plan.\n");
+                } 
 
                 break;
             }
@@ -223,7 +299,7 @@ int main(int argc, char *argv[]) {
     if (wd == -1) {
         perror("inotify_add_watch");
         close(inotify_fd);
-        exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE); 
     }
 
     char buf[BUF_LEN] __attribute__ ((aligned(8)));
