@@ -10,25 +10,49 @@
 #include <time.h>
 #include <pthread.h>
 #include <ctype.h>
-
+#include "message.h"
+#include <mqueue.h>
 
 #define BUF_LEN (10 * (sizeof(struct inotify_event) + NAME_MAX + 1))
 
-int ptime, type_id, module_id, ttc_id, parameter;
+typedef struct { 
+    int ptime;
+    int type_id;
+    int module_id;
+    int ttc_id;
+    int parameter;
+} plan_info;
+
 int prev_ptime = 0;  // Variable to hold the previous ptime
 
+Message plan_send = {0};
+Message plan_receive = {0};
+
 void* timesend(void* arg) {
-    int target_time = *(int*)arg; // Retrieve the time sent in the argument
+     plan_info *data = (plan_info*)arg;
+    int target_time = data->ptime;
+    int type_id = data->type_id;
     
     uint32_t obc_time, cur_time, f_time;
     obc_time = (uint32_t)time(NULL);
-
+    
+    mqd_t mqdes_send = mq_open("/mq_dispatch", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
+    if (mqdes_send == -1) {
+        perror("mq_open");
+        exit(EXIT_FAILURE);
+    }
+    
+    mqd_t mqdes_receive = mq_open("/mq_dispatch", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
+    if (mqdes_receive == -1) {
+        perror("mq_open");
+        exit(EXIT_FAILURE);
+    }
     while (1) {
         //if (target_time > 1700000000) {
             obc_time = (uint32_t)time(NULL);
             f_time = target_time - obc_time;
             cur_time = target_time - f_time;
-        //} 
+        //}  
 //        else {
 //            f_time = target_time - obc_time;
 //            cur_time = target_time - f_time;
@@ -37,14 +61,36 @@ void* timesend(void* arg) {
         sleep(1);
         if (cur_time == target_time) {
             printf("Current time: %u\n", cur_time);
+            plan_send.type = (unsigned char)data->type_id;
+            plan_send.mdid = (unsigned char)data->module_id;
+            plan_send.req_id = (unsigned char)data->ttc_id;
+            plan_send.param = (unsigned char)data->parameter;
+            printf("Sending plan_send:\n");
+            printf("type: %u, mdid: %d, req_id: %d, param: %d\n", plan_send.type, plan_send.mdid, plan_send.req_id, plan_send.param);
+            if (mq_send(mqdes_send, (char *)&plan_send, sizeof(plan_send), 1) == -1) {
+                    perror("mq_send"); 
+                    exit(EXIT_FAILURE);
+            }
+            if (mq_receive(mqdes_receive, (char *)&plan_receive, sizeof(plan_receive), NULL) == -1) {
+              perror("mq_receive");
+              mq_close(mqdes_receive); 
+              pthread_exit(NULL);  
+            }
             break;
-        }
-    }
+        } 
+    } 
+    
     printf("Finish time : %d\n", target_time);
+    printf("Type : %u\n",plan_send.type); 
+    printf("Type : %d\n",data->type_id);
     printf("-------------------------------------------\n");
+    
+    free(arg);
+    mq_close(mqdes_send);
+    mq_unlink("/mq_dispatch");
     pthread_exit(NULL); // Exit thread when done
 }
-
+ 
 void read_file_content(const char *filename) {
     char buffer[1024];
     ssize_t bytes_read;
@@ -81,6 +127,7 @@ void read_file_content(const char *filename) {
             if (token[0] != '#') {
                 if (token[0] == '+' && isdigit(token[1])) {
                     // Use sscanf to parse data from token (each line)
+                    int ptime, type_id, module_id, ttc_id, parameter;
                     sscanf(token, "%d\t%d\t%d\t%d\t%d", &ptime, &type_id, &module_id, &ttc_id, &parameter);
                     // Print parsed values
                     printf("Time: %d\n", ptime);
@@ -90,19 +137,29 @@ void read_file_content(const char *filename) {
                     printf("Parameter: %d\n", parameter);
                     printf("-------------------------------------------\n");
                     
-                    if (prev_ptime == 0){
+                    if (prev_ptime == 0) {
                         prev_ptime += obc_time;
                     }
                     ptime += prev_ptime; // Add previous time to relative time
+                    
                     pthread_t timesend_thread;
-                    int *ptime_copy = malloc(sizeof(int));
-                    *ptime_copy = ptime; // Copy ptime to avoid race conditions
-                    pthread_create(&timesend_thread, NULL, timesend, ptime_copy);
-    
+                    plan_info *data = malloc(sizeof(plan_info));
+                    if (data == NULL) {
+                        perror("Failed to allocate memory");
+                        close(fd);
+                        return;
+                    }
+                    data->ptime = ptime;
+                    data->type_id = type_id;
+                    data->module_id = module_id;
+                    data->ttc_id = ttc_id;
+                    data->parameter = parameter;
+                    pthread_create(&timesend_thread, NULL, timesend, data);
+                    
                     prev_ptime = ptime; // Update prev_ptime after creating the thread
-                }
-                else if(token[0] != '+'){
+                } else if (token[0] != '+') {
                     // Use sscanf to parse data from token (each line)
+                    int ptime, type_id, module_id, ttc_id, parameter;
                     sscanf(token, "%d\t%d\t%d\t%d\t%d", &ptime, &type_id, &module_id, &ttc_id, &parameter);
                     // Print parsed values
                     printf("Time: %d\n", ptime);
@@ -111,15 +168,23 @@ void read_file_content(const char *filename) {
                     printf("TTC ID: %d\n", ttc_id);
                     printf("Parameter: %d\n", parameter);
                     printf("-------------------------------------------\n");
-    
+
                     pthread_t timesend_thread;
-                    int *ptime_copy = malloc(sizeof(int));                    
-                    *ptime_copy = ptime; // Copy ptime to avoid race conditions
-                    pthread_create(&timesend_thread, NULL, timesend, ptime_copy);
-    
+                    plan_info *data = malloc(sizeof(plan_info));
+                    if (data == NULL) {
+                        perror("Failed to allocate memory");
+                        close(fd);
+                        return;
+                    }
+                    data->ptime = ptime;
+                    data->type_id = type_id;
+                    data->module_id = module_id;
+                    data->ttc_id = ttc_id;
+                    data->parameter = parameter;
+                    pthread_create(&timesend_thread, NULL, timesend, data);
+
                     prev_ptime = ptime; // Update prev_ptime after creating the thread
-                }
-                else { 
+                } else { 
                     printf("Reject Syntax at line %d: %s\n", line_count, token);
                     close(fd);
                     const char *newExtension = ".man";
