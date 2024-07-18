@@ -58,14 +58,12 @@ void* timesend(void* arg) {
 //            cur_time = target_time - f_time;
 //            printf("Target Relative Time: %u\n", target_time);
 //        }
-        sleep(1);
         if (cur_time == target_time) {
             printf("Current time: %u\n", cur_time);
             plan_send.type = (unsigned char)data->type_id;
             plan_send.mdid = (unsigned char)data->module_id;
             plan_send.req_id = (unsigned char)data->ttc_id;
             plan_send.param = (unsigned char)data->parameter;
-            printf("Sending plan_send:\n");
             printf("type: %u, mdid: %d, req_id: %d, param: %d\n", plan_send.type, plan_send.mdid, plan_send.req_id, plan_send.param);
             if (mq_send(mqdes_send, (char *)&plan_send, sizeof(plan_send), 1) == -1) {
                     perror("mq_send"); 
@@ -78,16 +76,15 @@ void* timesend(void* arg) {
             }
             break;
         } 
+        sleep(1);
     } 
     
     printf("Finish time : %d\n", target_time);
-    printf("Type : %u\n",plan_send.type); 
-    printf("Type : %d\n",data->type_id);
     printf("-------------------------------------------\n");
     
     free(arg);
-    mq_close(mqdes_send);
-    mq_unlink("/mq_dispatch");
+//    mq_close(mqdes_send);
+//    mq_unlink("/mq_dispatch");
     pthread_exit(NULL); // Exit thread when done
 }
  
@@ -294,8 +291,6 @@ void handle_event(struct inotify_event *i, const char *watched_dir) {
                 sscanf(line, "%d,%d", &plan_num, &plan_date);
                 printf("Plan Number: %d\n", plan_num);
                 printf("Plan Date: %d\n", plan_date);
-                printf("Last Plan Number: %d\n", last_plan_num);
-                printf("Last Plan Date: %d\n", last_plan_date);
 
                 // Check if plan_num or plan_date has changed
                 if (plan_date <= last_plan_date || plan_num <= last_plan_num) {
