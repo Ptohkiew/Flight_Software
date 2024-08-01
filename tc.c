@@ -20,6 +20,7 @@ int timestop = 0;
 pthread_mutex_t timestop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t reboot_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t param_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 FILE *fp;
 char path[1035];
@@ -29,9 +30,11 @@ Message struct_to_receive = {0};
 
 #define SHM_NAME_REBOOT "/reboot_status_shm"
 #define SHM_NAME_SHUTDOWN "/shutdown_time_shm"
+#define SHM_NAME_LOG "/log_shm"
 #define SHM_SIZE sizeof(uint32_t)
 
 int *reboot_status = 0;
+int *log_status = 0;
 uint32_t *shutdown_time = 0;
 
 void setup_shared_memory() {
@@ -75,6 +78,26 @@ void setup_shared_memory() {
     *shutdown_time = 0;
     
     close(shm_fd_shutdown);
+    /////////////
+    int shm_fd_log = shm_open(SHM_NAME_LOG, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+    if (shm_fd_log == -1) {
+        perror("shm_open log");
+        exit(EXIT_FAILURE);
+    }
+
+    if (ftruncate(shm_fd_log, SHM_SIZE) == -1) {
+        perror("ftruncate shutdown");
+        exit(EXIT_FAILURE);
+    }
+
+    log_status = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_log, 0);
+    if (log_status == MAP_FAILED) {
+        perror("mmap log");
+        exit(EXIT_FAILURE);
+    }
+    *log_status = 0;
+    
+    close(shm_fd_log);
 }
 
 void* OBCReboot(void* arg) {
@@ -154,6 +177,103 @@ void* OBCShutdown(void* arg) {
     pthread_exit(NULL); // Exit thread when done
 }
 
+void stop_log(){
+    pthread_mutex_lock(&log_mutex);
+    *log_status = 1;
+    printf("Log Status : %d\n", *log_status);
+    pthread_mutex_unlock(&log_mutex);
+}
+
+void update_num_file(const char *filename, uint32_t new_num_file) {
+    FILE *file = fopen(filename, "r");  // เปิดไฟล์เดิมในโหมดอ่าน
+    FILE *temp = fopen("temp.conf", "w");  // เปิดไฟล์ชั่วคราวในโหมดเขียน
+
+    if (file == NULL || temp == NULL) {
+        perror("Could not open config file or temporary file");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) { 
+        char key[256];
+        if (sscanf(line, "%255[^=]", key) == 1) {
+            if (strcmp(key, "num_file") == 0) {
+                fprintf(temp, "num_file=%u\n", new_num_file);
+            } 
+            else {
+                fputs(line, temp);  // เขียนบรรทัดเดิมไปยังไฟล์ชั่วคราว
+            }
+        }
+    }
+
+    fclose(file);
+    fclose(temp);
+
+    // แทนที่ไฟล์เดิมด้วยไฟล์ชั่วคราว
+    remove(filename);
+    rename("temp.conf", filename);
+}
+
+void update_file_size(const char *filename, uint32_t new_file_size) {
+    FILE *file = fopen(filename, "r");  // เปิดไฟล์เดิมในโหมดอ่าน
+    FILE *temp = fopen("temp.conf", "w");  // เปิดไฟล์ชั่วคราวในโหมดเขียน
+
+    if (file == NULL || temp == NULL) {
+        perror("Could not open config file or temporary file");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        char key[256];
+        if (sscanf(line, "%255[^=]", key) == 1) {
+            if (strcmp(key, "file_size") == 0) {
+                fprintf(temp, "file_size=%u\n", new_file_size);
+            } 
+            else {
+                fputs(line, temp);  // เขียนบรรทัดเดิมไปยังไฟล์ชั่วคราว
+            }
+        }
+    }
+
+    fclose(file);
+    fclose(temp);
+
+    // แทนที่ไฟล์เดิมด้วยไฟล์ชั่วคราว
+    remove(filename);
+    rename("temp.conf", filename);
+}
+
+void update_period(const char *filename, uint32_t new_period) {
+    FILE *file = fopen(filename, "r");  // เปิดไฟล์เดิมในโหมดอ่าน
+    FILE *temp = fopen("temp.conf", "w");  // เปิดไฟล์ชั่วคราวในโหมดเขียน
+
+    if (file == NULL || temp == NULL) {
+        perror("Could not open config file or temporary file");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        char key[256];
+        if (sscanf(line, "%255[^=]", key) == 1) {
+            if (strcmp(key, "period") == 0) {
+                printf("period=%u\n", new_period);
+                fprintf(temp, "period=%u\n", new_period);
+            } 
+            else {
+                fputs(line, temp);  
+            }
+        }
+    }
+
+    fclose(file);
+    fclose(temp);
+
+    remove(filename);
+    rename("temp.conf", filename);
+}
+
 ////TC FUNCTION 
 void* tc(void* arg) {
     mqd_t mqdes_receive_tc = mq_open("/mq_tc", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
@@ -167,14 +287,22 @@ void* tc(void* arg) {
         perror("mq_open");
         exit(EXIT_FAILURE);  
     } 
- 
+    mqd_t send_log = mq_open("/mq_log", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
+    if (mqdes_send_tc == -1) {
+        perror("mq_open");
+        exit(EXIT_FAILURE);  
+    } 
+    mqd_t receive_log = mq_open("/mq_log", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
+    if (mqdes_receive_tc == -1) {
+        perror("mq_open");
+        exit(EXIT_FAILURE);
+    }
     while (1) {
         if (mq_receive(mqdes_receive_tc, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
             perror("mq_receive");
             exit(EXIT_FAILURE);  
         }
         
-        printf("%d\n", *reboot_status);
         printf("Module ID from sender: %u\n", struct_to_receive.mdid);
         printf("Telemetry ID: %u\n", struct_to_receive.req_id);   
         struct_to_send.mdid = struct_to_receive.mdid;
@@ -187,7 +315,53 @@ void* tc(void* arg) {
         printf("Module ID: %u\n", struct_to_send.mdid);
         printf("Telemetry ID: %u\n", struct_to_send.req_id);
         printf("Parameter: %u\n", struct_to_send.param);  
-        if (*reboot_status == STANDBY){
+        
+        if (struct_to_send.req_id == 4) { 
+            stop_log();
+            if (struct_to_send.type == TC_REQUEST) { 
+                struct_to_send.type = TC_RETURN;
+            }
+            if (mq_send(mqdes_send_tc, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
+                perror("mq_send");
+                exit(EXIT_FAILURE); 
+            }
+        }
+        
+        else if (struct_to_send.req_id == 5) {
+            update_num_file("log.conf", struct_to_receive.param);  
+            printf("Config file updated successfully.\n");
+            if (struct_to_send.type == TC_REQUEST) {
+                struct_to_send.type = TC_RETURN;
+            }
+            if (mq_send(mqdes_send_tc, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
+                perror("mq_send");
+                exit(EXIT_FAILURE); 
+            }
+        }
+        else if (struct_to_send.req_id == 6) {
+            update_file_size("log.conf", struct_to_receive.param);
+            printf("Config file updated successfully.\n");
+            if (struct_to_send.type == TC_REQUEST) {  
+                struct_to_send.type = TC_RETURN;
+            }
+            if (mq_send(mqdes_send_tc, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
+                perror("mq_send");
+                exit(EXIT_FAILURE); 
+            }
+        }
+        else if (struct_to_send.req_id == 7) {
+            update_period("log.conf", struct_to_receive.param); 
+            printf("Config file updated successfully.\n");
+            if (struct_to_send.type == TC_REQUEST) {
+                struct_to_send.type = TC_RETURN;
+            }
+            if (mq_send(mqdes_send_tc, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
+                perror("mq_send");
+                exit(EXIT_FAILURE); 
+            }
+        }
+        
+        else if (*reboot_status == STANDBY){
             if (struct_to_send.type == TC_REQUEST) {
                 struct_to_send.type = TC_RETURN;
             }
@@ -196,7 +370,7 @@ void* tc(void* arg) {
             if (mq_send(mqdes_send_tc, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
                 perror("mq_send");
                 exit(EXIT_FAILURE); 
-            }      
+            }       
             if (struct_to_send.mdid == 1) {
                 if (struct_to_send.req_id == 1 && *reboot_status == STANDBY) {    
                     pthread_mutex_lock(&timestop_mutex);
@@ -216,7 +390,6 @@ void* tc(void* arg) {
                 }
 
                 else if (struct_to_send.req_id == 2 && *reboot_status == STANDBY) {
-                      printf("Hello");    
                     pthread_mutex_lock(&timestop_mutex);
                     timestop = 0; 
                     pthread_mutex_unlock(&timestop_mutex); 
@@ -303,12 +476,16 @@ void* tc(void* arg) {
                     
             }  
         } 
-
+        
+        
+ 
         printf("--Respond Success!--\n");  
-    }
+    } 
 
     mq_close(mqdes_receive_tc);
+     mq_close(receive_log);
     mq_unlink("/mq_tc");  
+    mq_unlink("/mq_log");
 
     return NULL;
 }
