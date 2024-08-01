@@ -14,8 +14,8 @@
 #include <netdb.h>
 #include <sys/mman.h>
 
-#define MAX_FILE_SIZE 204800  // ¢π“¥ Ÿß ÿ¥¢Õß‰ø≈Ï („π‰∫µÏ)
-#define MAX_MSG_SIZE 256 
+
+ 
 #define SHM_SIZE sizeof(uint32_t)
 #define SHM_NAME_LOG "/log_shm"
 
@@ -25,13 +25,18 @@ Message log_receive = {0};
 FILE *fp;
 char path[1035];
 uint32_t obc_time;
-uint32_t period = 10;
 char housekpfile[30];
 uint32_t end_time;
 int temp, re_log = 0;
 uint32_t remain_mem;
 uint32_t ram_usage; 
 uint32_t ram_peak;
+uint32_t MAX_FILE_SIZE = 0; 
+
+uint32_t num_file = 0;
+uint32_t file_size = 0;
+uint32_t period = 0;
+
 
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int *log_status = 0;
@@ -65,39 +70,6 @@ void setup_shared_memory() {
     close(shm_fd_log);
 }
 
-//void* stop_log(void* arg) {
-//    mqd_t receive_log = mq_open("/mq_log", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
-//    if (receive_log == -1) {
-//        perror("mq_open"); 
-//        pthread_exit(NULL);
-//    }
-//    
-//    mqd_t send_log = mq_open("/mq_log", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
-//    if (send_log == -1) {
-//        perror("mq_open");
-//        pthread_exit(NULL);
-//    }
-//
-//    if (mq_receive(receive_log, (char *)&log_receive, sizeof(log_receive), NULL) == -1) {
-//        perror("mq_receive");
-//        mq_close(receive_log);
-//        pthread_exit(NULL);
-//    }
-//         printf("log type = %u\n", log_receive.type);
-//     printf("mdid = %u\n", log_receive.mdid);
-//     printf("req = %u\n", log_receive.req_id);
-//    
-//     if (log_receive.req_id == 4) {
-//        re_log = 1;
-//    }
-//    if (mq_send(send_log, (char *)&log_send, sizeof(log_send), 1) == -1) {
-//        perror("mq_send");
-//        mq_close(send_log);
-//        pthread_exit(NULL);
-//    }
-////    mq_close(receive_log);
-////    pthread_exit(NULL);
-//}
 
 void log_data(const char *message) {
     FILE *logfile2 = fopen(housekpfile, "a");
@@ -122,24 +94,42 @@ void collect_and_log_data() {
     log_data(log_message);
 }
 
+void read_config(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Could not open config file");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[256];
+    
+    while (fgets(line, sizeof(line), file)) {
+        char key[256];
+        uint32_t value;
+        if (sscanf(line, "%255[^=]=%u", key, &value) == 2) {
+            if (strcmp(key, "num_file") == 0) {
+                num_file = value;
+            } else if (strcmp(key, "file_size") == 0) {
+                file_size = value;
+            } else if (strcmp(key, "period") == 0) {
+                period = value;
+            }
+        }
+    }
+
+    fclose(file);
+}
+
+
 int main() {
     setup_shared_memory();
+    read_config("log.conf");
     while (1) {
+        read_config("log.conf");
         int num, type, mdid, req_id;
         char buffer[256];
-        for (int i = 0; i < 5; i++) {
-//            if(*log_status == 1){
-//                break;
-//            }
-//            pthread_t stop_log_thread;
-//            pthread_create(&stop_log_thread, NULL, stop_log, NULL);
-//            pthread_detach(stop_log_thread);
-//            printf("re-log = %u\n", re_log);            
-//            if (re_log == 1) {
-//            re_log = 0;
-//            break;
-//            }
-//            printf("re-log = %u\n", re_log);                                    
+        for (int i = 0; i < num_file; i++) {
+            read_config("log.conf");                              
             sprintf(housekpfile, "hkp_log_%d.txt", i);
 
             FILE *logfile1 = fopen(housekpfile, "w");
@@ -162,6 +152,7 @@ int main() {
             fclose(logfile1);
  
             while (1) {   
+                read_config("log.conf");
                 pthread_mutex_lock(&log_mutex);
                 if (*log_status == 1) {
                     printf("Log Status : %d\n", *log_status);
@@ -185,11 +176,11 @@ int main() {
                     exit(EXIT_FAILURE);
                 }
 
-                if (file_info.st_size > MAX_FILE_SIZE) {
+                if (file_info.st_size > file_size) {
                     printf("1 MB.\n");
                     end_time = (uint32_t)time(NULL);
                     logfile1 = fopen(housekpfile, "r+");
-                    fseek(logfile1, 41, SEEK_SET);
+                    fseek(logfile1, 41, SEEK_SET); 
                     fprintf(logfile1, "End Time : %10u\n", end_time);
                     fclose(logfile1);
                     break;
@@ -203,10 +194,7 @@ int main() {
                 }
 
                 while (fgets(buffer, sizeof(buffer), logfile1) != NULL) {
-//                    printf("Log Status : %d\n", *log_status);
-//                    if(*log_status == 1){
-//                      break; 
-//                    }
+                    read_config("log.conf");
                     if (sscanf(buffer, "%d ,%d, %d, %d", &num, &type, &mdid, &req_id) == 4) {
                         log_send.type = type;
                         log_send.mdid = mdid;
