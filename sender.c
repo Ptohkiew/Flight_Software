@@ -80,6 +80,46 @@ void* sender(void*arg)
             struct_to_send.param = (unsigned char)delay;
         }
 
+        if(struct_to_send.type == TC_REQUEST && struct_to_send.mdid == 1 && struct_to_send.req_id == 5){
+            int num_file;
+            do {
+                printf("Enter number of file in folder : ");
+                scanf("%d", &num_file);
+                while (getchar() != '\n');
+                if (num_file < 0) {
+                    printf("Invalid input\n");
+                }
+            } while (num_file < 0);
+            printf("%d\n", num_file);
+            struct_to_send.param = (unsigned int)num_file;
+            printf("%u\n", struct_to_send.param);
+        }
+        if(struct_to_send.type == TC_REQUEST && struct_to_send.mdid == 1 && struct_to_send.req_id == 6){
+            int file_size;
+            do {
+                printf("Enter size of file : ");
+                scanf("%d", &file_size);
+                while (getchar() != '\n');
+                if (file_size < 0) { 
+                    printf("Invalid input\n");
+                }
+            } while (file_size < 0);
+            struct_to_send.param = (unsigned int)file_size;
+        }
+        
+        if(struct_to_send.type == TC_REQUEST && struct_to_send.mdid == 1 && struct_to_send.req_id == 7){
+            int period;
+            do {
+                printf("Enter period : ");
+                scanf("%d", &period);
+                while (getchar() != '\n');
+                if (period < 0) {
+                    printf("Invalid input\n");
+                }
+            } while (period < 0);
+            struct_to_send.param = (unsigned int)period;
+        }
+        
         if (mq_send(mqdes_send, (char *)&struct_to_send, sizeof(struct_to_send), 1) == -1) {
             perror("mq_send"); 
             exit(EXIT_FAILURE);
@@ -89,13 +129,18 @@ void* sender(void*arg)
             printf("\n-- Wait for respond --\n");
           
         }
+        if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
+              perror("mq_receive");
+              mq_close(mqdes_receive); 
+              pthread_exit(NULL);  
+        }
 ///////////////////////////////////////////////////// TC //////////////////////////////////////////////
-        if(struct_to_send.type == TC_REQUEST){
+        /*if(struct_to_send.type == TC_REQUEST){
           if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
               perror("mq_receive");
               mq_close(mqdes_receive); 
               pthread_exit(NULL);  
-          }
+          }*/
           if (struct_to_receive.type == TC_RETURN ){
               if(struct_to_receive.mdid == 1 && struct_to_receive.req_id == 1)
               {
@@ -125,6 +170,42 @@ void* sender(void*arg)
                 printf("-------------------------------------------\n");
                 continue;
               }
+              else if(struct_to_send.mdid == 1 && struct_to_send.req_id == 4)
+              {
+                printf("Type : %u\n", struct_to_receive.type); 
+                printf("Module ID : %u\n", struct_to_receive.mdid);
+                printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+                printf("---- New log ----\n");                  
+                printf("-------------------------------------------\n");
+                continue;
+              }
+              else if(struct_to_send.mdid == 1 && struct_to_send.req_id == 5)
+              {
+                printf("Type : %u\n", struct_to_receive.type); 
+                printf("Module ID : %u\n", struct_to_receive.mdid);
+                printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+                printf("---- Edit number of file ----\n");                  
+                printf("-------------------------------------------\n");
+                continue;
+              }
+              else if(struct_to_send.mdid == 1 && struct_to_send.req_id == 6)
+              {
+                printf("Type : %u\n", struct_to_receive.type); 
+                printf("Module ID : %u\n", struct_to_receive.mdid);
+                printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+                printf("---- Edit size of file ----\n");                  
+                printf("-------------------------------------------\n");
+                continue;
+              }
+              else if(struct_to_send.mdid == 1 && struct_to_send.req_id == 7)
+              {
+                printf("Type : %u\n", struct_to_receive.type); 
+                printf("Module ID : %u\n", struct_to_receive.mdid);
+                printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+                printf("---- Edit period ----\n");                  
+                printf("-------------------------------------------\n");
+                continue;
+              }
               
     //          else if(struct_to_receive.type == TC_RETURN){
     //            if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
@@ -143,23 +224,23 @@ void* sender(void*arg)
     //            }
     //          }
             }
-            else
+           /* else
             {   
                 printf("No Type3\n"); 
                 printf("-------------------------------------------\n");
                 continue;
             }
            
-        }
+        //}
         
 ///////////////////////////////////////////////////// TM //////////////////////////////////////////////       
         
-        if (struct_to_send.type == TM_REQUEST ){
+        /*if (struct_to_send.type == TM_REQUEST ){
           if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
               perror("mq_receive");
               mq_close(mqdes_receive); 
-              pthread_exit(NULL);   
-          }
+              pthread_exit(NULL);    
+          }*/ 
           if(struct_to_receive.type == TM_RETURN){
             if(struct_to_send.mdid == 1 && struct_to_send.req_id == 1)
             {
@@ -171,7 +252,7 @@ void* sender(void*arg)
               float cpu_temp  = struct_to_receive.val ;
               cpu_temp *= 0.001;             
               printf("CPU Temp: %.3f C\n", cpu_temp);                        
-              printf("-------------------------------------------\n");
+              printf("-------------------------------------------\n"); 
               struct_to_receive.type = TM_REQUEST ;
             }
   
@@ -210,13 +291,56 @@ void* sender(void*arg)
               printf("Telemetry ID : %u\n", struct_to_receive.req_id);
               printf("Telemetry Parameter : %u\n", struct_to_receive.param);
               ip_address[0] = (struct_to_receive.val >> 24);
-              ip_address[1] = (struct_to_receive.val >> 16);
+              ip_address[1] = (struct_to_receive.val >> 16);  
               ip_address[2] = (struct_to_receive.val >> 8);
               ip_address[3] = struct_to_receive.val;
               printf("IP Address : %hhu.%hhu.%hhu.%hhu\n", ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
         
               printf("-------------------------------------------\n");
             }
+            else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 6) 
+            {
+              printf("Type : %u\n", struct_to_receive.type);
+              printf("Module ID : %u\n", struct_to_receive.mdid);
+              printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+              printf("Telemetry Parameter : %u\n", struct_to_receive.param);
+              float cpu_usage = struct_to_receive.val;
+              cpu_usage *= 0.01;
+              printf("Cpu usage : %.2f %\n", cpu_usage);
+              printf("-------------------------------------------\n");
+            }  
+            else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 7) 
+            {
+              printf("Type : %u\n", struct_to_receive.type);
+              printf("Module ID : %u\n", struct_to_receive.mdid);
+              printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+              printf("Telemetry Parameter : %u\n", struct_to_receive.param);
+              float cpu_peak = struct_to_receive.val;
+              cpu_peak *= 0.01;
+              printf("Cpu peak : %.2f %\n", cpu_peak);
+              printf("-------------------------------------------\n");
+            }
+            else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 9) 
+            {
+              uint16_t  ram[2];
+              printf("Type : %u\n", struct_to_receive.type);
+              printf("Module ID : %u\n", struct_to_receive.mdid);
+              printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+              printf("Telemetry Parameter : %u\n", struct_to_receive.param);
+              ram[0] = (struct_to_receive.val >> 16);
+              ram[1] = struct_to_receive.val;
+              printf("Ram usage : %u/%u MB\n", ram[1], ram[0]);
+              printf("-------------------------------------------\n");
+            }
+            else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 10) 
+            {
+              printf("Type : %u\n", struct_to_receive.type);
+              printf("Module ID : %u\n", struct_to_receive.mdid);
+              printf("Telemetry ID : %u\n", struct_to_receive.req_id);
+              printf("Telemetry Parameter : %u\n", struct_to_receive.param); 
+              printf("Ram peak : %u MB\n", struct_to_receive.val);
+              printf("-------------------------------------------\n");
+            } 
             else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 14) 
             {
               printf("Type : %u\n", struct_to_receive.type);
@@ -229,9 +353,9 @@ void* sender(void*arg)
             else if (struct_to_receive.mdid == 1 && struct_to_send.req_id == 15) 
             {
               printf("Type : %u\n", struct_to_receive.type);
-              printf("Module ID : %u\n", struct_to_receive.mdid);
-              printf("Telemetry ID : %u\n", struct_to_receive.req_id);
-              printf("Telemetry Parameter : %u\n", struct_to_receive.param);
+              printf("Module ID : %u\n", struct_to_receive.mdid); 
+              printf("Telemetry ID : %u\n", struct_to_receive.req_id); 
+              printf("Telemetry Parameter : %u\n", struct_to_receive.param); 
               printf("Remaining shutdown time : %u\n", struct_to_receive.val);
               printf("-------------------------------------------\n");
             }
@@ -311,18 +435,18 @@ void* sender(void*arg)
               printf("No Type1\n"); 
               printf("-------------------------------------------\n");  
           } 
-        }
+        //}
           
-        else
-        {   
-            if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
-                perror("mq_receive");
-                mq_close(mqdes_receive); 
-                pthread_exit(NULL);
-            }
-            printf("No Type\n"); 
-            printf("-------------------------------------------\n");
-        }
+//        else
+//        {   
+//            if (mq_receive(mqdes_receive, (char *)&struct_to_receive, sizeof(struct_to_receive), NULL) == -1) {
+//                perror("mq_receive");
+//                mq_close(mqdes_receive); 
+//                pthread_exit(NULL);
+//            }
+//            printf("No Type\n"); 
+//            printf("-------------------------------------------\n");
+//        }
        
     }  
   
