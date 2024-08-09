@@ -15,7 +15,6 @@
 #include <sys/mman.h>
 #include <hiredis/hiredis.h>
 
- 
 #define SHM_SIZE sizeof(uint32_t)
 #define SHM_NAME_LOG "/log_shm"
 
@@ -38,13 +37,11 @@ uint32_t file_size = 0;
 uint32_t period = 0;
 int cpu_temp;
 
-
 #define CONFIG_FILE "log.conf"
 #define TYPE_LENGTH 20
 
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int *log_status = 0;
-
 
 void setup_shared_memory() {
     int shm_fd_log = shm_open(SHM_NAME_LOG, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
@@ -58,7 +55,6 @@ void setup_shared_memory() {
         exit(EXIT_FAILURE);
     }
     
-
     log_status = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_log, 0);
     if (log_status == MAP_FAILED) {
         perror("mmap log");
@@ -74,7 +70,6 @@ void setup_shared_memory() {
     close(shm_fd_log);
 }
 
-
 void log_data(const char *message) {
     FILE *logfile2 = fopen(housekpfile, "a");
     if (logfile2 == NULL) {
@@ -86,22 +81,19 @@ void log_data(const char *message) {
     fprintf(logfile2, "%u, %s\n", obc_time, message);
     printf("Data written successfully.\n");
     fclose(logfile2);
-
-    
-} 
+}
 
 void collect_and_log_data() {
     char log_message[1024] = "";
     int first_value = 1; 
-//    snprintf(log_message, sizeof(log_message), "%d, %u, %u, %u",
-//             cpu_temp, remain_mem, ram_usage, ram_peak);
-FILE *config_file;
-    char line[256];
-    char type[TYPE_LENGTH];
-    int type1, type2, type3;
-    config_file = fopen(CONFIG_FILE, "r");
+    char line[256];  // ประกาศตัวแปร line
+    char type[TYPE_LENGTH];  // ประกาศตัวแปร type
+    int type1, type2, type3;  // ประกาศตัวแปร type1, type2, type3
+
+    FILE *config_file = fopen(CONFIG_FILE, "r");
     if (config_file == NULL) {
         perror("fopen");
+        return;
     }
     
     redisContext *c = redisConnect("127.0.0.1", 6379);
@@ -113,20 +105,17 @@ FILE *config_file;
             printf("Can't allocate redis context\n");
         }
         fclose(config_file);
-        exit(EXIT_FAILURE);
+        return;
     }
 
     while (fgets(line, sizeof(line), config_file)) {
-        // ลบตัวอักษร new line ออก
         line[strcspn(line, "\n")] = '\0';
 
-        // แยกค่าหลังจาก 'type='
         char *type_str = strstr(line, "type=");
         if (type_str) {
-            type_str += strlen("type="); // ข้าม 'type='
+            type_str += strlen("type=");
             strncpy(type, type_str, TYPE_LENGTH - 1);
-            type[TYPE_LENGTH - 1] = '\0'; // แน่ใจว่าเป็น null-terminated
-            printf("Found type in config: %s\n", type); // Debugging line
+            type[TYPE_LENGTH - 1] = '\0';
             
             sscanf(type, "%d %d %d", &type1, &type2, &type3);
             char key[50]; 
@@ -134,22 +123,14 @@ FILE *config_file;
             redisReply *reply = redisCommand(c, "GET %s", key);
             if (reply == NULL) {
                 fprintf(stderr, "Error: %s\n", c->errstr);
-                redisFree(c);
-                fclose(config_file);
-                exit(EXIT_FAILURE);
+                break;
             }
             
             if (!first_value) { 
                 snprintf(log_message + strlen(log_message), sizeof(log_message) - strlen(log_message), ", ");
             }
             snprintf(log_message + strlen(log_message), sizeof(log_message) - strlen(log_message), "%d", atoi(reply->str));
-            first_value = 0;  // เปลี่ยน flag หลังจากค่าตัวแรก
-//            if (reply->type == REDIS_REPLY_STRING) {
-//                int cpu_temp = atoi(reply->str);
-//                printf("cpu_temp : %d\n", cpu_temp);
-//            } else {
-//                printf("No valid reply for key: %s\n", key);
-//            } 
+            first_value = 0;
 
             freeReplyObject(reply);
         }
@@ -160,28 +141,26 @@ FILE *config_file;
     log_data(log_message);
 }
 
-uint32_t ftype, fmdid, freq_id;
-
 void read_config(const char *filename) {
     FILE *file = fopen(filename, "r");
     if (file == NULL) {
         perror("Could not open config file");
-        exit(EXIT_FAILURE);
+        return;
     }
 
-    char line[256];
-    uint32_t ftype, fmdid, freq_id;
-    
+    char line[256];  // ประกาศตัวแปร line
+
     redisContext *c = redisConnect("127.0.0.1", 6379);
-        if (c == NULL || c->err) {
-            if (c) {
-                printf("Error: %s\n", c->errstr);
-                redisFree(c);
-            } else {
-                printf("Can't allocate redis context\n");
-            }
-            exit(EXIT_FAILURE);
+    if (c == NULL || c->err) {
+        if (c) {
+            printf("Error: %s\n", c->errstr);
+            redisFree(c);
+        } else {
+            printf("Can't allocate redis context\n");
         }
+        fclose(file);
+        return;
+    }
 
     while (fgets(line, sizeof(line), file)) {
         char key[256];
@@ -197,53 +176,18 @@ void read_config(const char *filename) {
             } else if (strcmp(key, "period") == 0) {
                 period = value1;
             }
-        } //else if (num_values == 4) {
-//            if (strcmp(key, "type") == 0) {
-//                ftype = value1;
-//                fmdid = value2;
-//                freq_id = value3;
-//
-//                if (value2 == 1 && value3 == 1) {
-//                    redisReply *reply = redisCommand(c, "GET cpu_temp");
-//                    if (reply == NULL) {
-//                        fprintf(stderr, "Error: %s\n", c->errstr);
-//                        redisFree(c);
-//                        exit(EXIT_FAILURE);
-//                    }
-//
-//                    cpu_temp = atoi(reply->str);
-//                    //printf("cpu_temp : %d\n", cpu_temp);
-//
-//                }
-//                if (value2 == 1 && value3 == 2) {
-//                    redisReply *reply = redisCommand(c, "GET tm_maxmem");
-//                    if (reply == NULL) {
-//                        fprintf(stderr, "Error: %s\n", c->errstr);
-//                        redisFree(c);
-//                        exit(EXIT_FAILURE);
-//                    }
-//
-//                    int max_mem = atoi(reply->str);
-//                    printf("max_mem : %d\n", max_mem);
-//                    freeReplyObject(reply);
-//                    redisFree(c);
-//                }
-//            }
-//        }
+        }
     }
- 
+    
+    redisFree(c);
     fclose(file);
 }
-
-
 
 int main() {
     setup_shared_memory();
     read_config("log.conf");
     while (1) {
         read_config("log.conf"); 
-        int num, type, mdid, req_id;
-        char buffer[256];
         for (int i = 0; i < num_file; i++) {
             read_config("log.conf");                              
             sprintf(housekpfile, "hkp_log_%d.txt", i);
@@ -272,13 +216,15 @@ int main() {
                 pthread_mutex_lock(&log_mutex);
                 if (*log_status == 1) {
                     printf("Log Status : %d\n", *log_status);
-                    pthread_mutex_unlock(&log_mutex);
-                    pthread_mutex_lock(&log_mutex);
                     *log_status = 0;
                     pthread_mutex_unlock(&log_mutex);
                     printf("1 MB.\n");
                     end_time = (uint32_t)time(NULL);
                     logfile1 = fopen(housekpfile, "r+");
+                    if (logfile1 == NULL) {
+                        perror("fopen");
+                        break;
+                    }
                     fseek(logfile1, 41, SEEK_SET);
                     fprintf(logfile1, "End Time : %10u\n", end_time);
                     fclose(logfile1);
@@ -296,79 +242,32 @@ int main() {
                     printf("1 MB.\n");
                     end_time = (uint32_t)time(NULL);
                     logfile1 = fopen(housekpfile, "r+");
-                    fseek(logfile1, 41, SEEK_SET); 
+                    if (logfile1 == NULL) {
+                        perror("fopen");
+                        break;
+                    }
+                    fseek(logfile1, 41, SEEK_SET);
                     fprintf(logfile1, "End Time : %10u\n", end_time);
                     fclose(logfile1);
                     break;
                 }
                 
-
                 logfile1 = fopen(housekpfile, "r");
-                if (logfile1 == NULL) { 
+                if (logfile1 == NULL) {
                     perror("fopen");
-                    exit(EXIT_FAILURE);
+                    exit(EXIT_FAILURE); 
                 }
 
+                char buffer[256];  // ประกาศตัวแปร buffer
                 while (fgets(buffer, sizeof(buffer), logfile1) != NULL) {
-                    read_config("log.conf");
-                    if (sscanf(buffer, "%d ,%d, %d, %d", &num, &type, &mdid, &req_id) == 4) {
-                        log_send.type = type;
-                        log_send.mdid = mdid;
-                        log_send.req_id = req_id;
-                        
-                        printf("type = %u\n", log_send.type);
-                        printf("mdid = %u\n", log_send.mdid);
-                        printf("req = %u\n", log_send.req_id);
-//                        printf("cpu_temp : %d\n", cpu_temp);
-//                        mqd_t mqdes_send = mq_open("/mq_dispatch", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
-//                        if (mqdes_send == -1) {
-//                            perror("mq_open");
-//                            exit(EXIT_FAILURE);
-//                        }
-//
-//                        mqd_t mqdes_receive = mq_open("/mq_dispatch", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
-//                        if (mqdes_receive == -1) {
-//                            perror("mq_open");
-//                            mq_close(mqdes_send);
-//                            exit(EXIT_FAILURE);
-//                        }
-// 
-//                        if (mq_send(mqdes_send, (char *)&log_send, sizeof(log_send), 1) == -1) {
-//                            perror("mq_send");
-//                            mq_close(mqdes_send);
-//                            mq_close(mqdes_receive);
-//                            exit(EXIT_FAILURE);
-//                        }
-//
-//                        if (mq_receive(mqdes_receive, (char *)&log_receive, sizeof(log_receive), NULL) == -1) {
-//                            perror("mq_receive");
-//                            mq_close(mqdes_receive);
-//                            mq_close(mqdes_send);
-//                            exit(EXIT_FAILURE);
-//                        }
-//
-//                        if (log_send.req_id == 1) {
-//                            temp = log_receive.val;
-//                        } else if (log_send.req_id == 4) {
-//                            remain_mem = log_receive.val;
-//                        } else if (log_send.req_id == 9) {
-//                            ram_usage = log_receive.val;
-//                        } else if (log_send.req_id == 10) {
-//                            ram_peak = log_receive.val;
-//                        }
-//
-//                        if (num == 4 && type == 0 && mdid == 1 && req_id == 10) {
-//                            break;
-//                        }
-//
-//                        mq_close(mqdes_send);
-//                        mq_close(mqdes_receive);
+                    if (sscanf(buffer, "%u %u", &temp, &obc_time) == 2) {
+                        re_log = temp; 
+                        break;
                     }
                 }
                 fclose(logfile1);
-
                 collect_and_log_data();
-                sleep(period);
+                sleep(period); 
             }
         }
     }
