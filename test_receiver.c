@@ -28,7 +28,8 @@ int router_start(void);
 int server_start(void);
 
 /* Server port, the port the server listens on for incoming connections from the client. */
-#define SERVER_PORT		10
+#define SERVER_PORT		15
+#define SERVER_PORT2		1
 
 /* Commandline options */
 static uint8_t server_address = 1;
@@ -36,12 +37,12 @@ static uint8_t server_address = 1;
 
 /* Test mode, check that server & client can exchange packets */
 static bool test_mode = false;
-static unsigned int server_received = 0;
+static unsigned int server_received = 0; 
 static unsigned int run_duration_in_sec = 3;
 static unsigned int successful_ping = 0;
 
 Message send_msg = {0};
-Message receive_msg = {0}; 
+Message receive_msg = {0};  
 mqd_t mqdes_dis, mqdes_tm, mqdes_tc,mqdes_obc;
 
 csp_usart_conf_t uart_conf = { 
@@ -54,10 +55,64 @@ csp_usart_conf_t uart_conf = {
 
 csp_iface_t *kiss_iface = NULL;
 
+void *return_csp(void *arg){
+    csp_conn_t * conn2 = csp_connect(CSP_PRIO_NORM, server_address, SERVER_PORT, 1000, CSP_O_NONE);
+    csp_print("Destination port: %u\n", csp_conn_dport(conn2));
+
+    if (conn2 == NULL) {
+        csp_print("Connection failed\n");
+        return NULL;
+    }
+    
+    csp_packet_t * packet2 = csp_buffer_get(0);
+    if (packet2 == NULL) {
+        csp_print("Failed to get CSP buffer\n");
+        csp_close(conn2);
+        return NULL;
+    }
+            
+    printf("Type : %u\n", receive_msg.type); 
+    printf("Respond ModuleID : %u\n", receive_msg.mdid);
+    printf("Respond TelemetryID : %u\n", receive_msg.req_id);
+    printf("-------------------------------------------\n");
+    csp_print("Sending Type: %u, MDID: %u, TelemetryID: %u\n", send_msg.type, send_msg.mdid, send_msg.req_id);
+            
+    memcpy(packet2->data, &receive_msg, sizeof(receive_msg));
+    csp_print("Packet data before sending: Type: %u, MDID: %u, TelemetryID: %u\n", receive_msg.type, receive_msg.mdid, receive_msg.req_id);
+//    int result = csp_ping(server_address, 5000, 100, CSP_O_NONE);
+//		csp_print("Ping address: %u, result %d [mS]\n", server_address, result);
+//        // Increment successful_ping if ping was successful
+//        if (result >= 0) {   
+//            ++successful_ping;
+//        }
+//        csp_print("Connection table\r\n");
+//    csp_conn_print_table();
+//  
+//    csp_print("Interfaces\r\n");
+//    csp_iflist_print();
+    // ตรวจสอบขนาดของ send_msg
+    csp_print("Size of send_msg: %zu\n", sizeof(receive_msg));
+    
+    // ตั้งค่า packet->length ให้เท่ากับขนาดของ send_msg
+    packet2->length = sizeof(receive_msg);
+    
+    // ตรวจสอบ packet->length หลังตั้งค่า
+    csp_print("Packet length set to: %u\n", packet2->length);
+
+
+    csp_send(conn2, packet2);  
+    csp_print("Packet sent: %u\n", packet2);
+    
+    csp_buffer_free(packet2);
+    csp_close(conn2);
+    
+    return NULL; 
+}  
+  
 void *msg_dis(void *arg) {
     mqdes_tm = mq_open("/mq_tm", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
     mqdes_tc = mq_open("/mq_tc", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
-    mqdes_obc = mq_open("/mq_obc", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
+    mqdes_obc = mq_open("/mq_obc", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes); 
     
     mqd_t mqdes_type = mq_open("/mq_ttctype", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes); //send to aocs_dispatcher
 	  mqd_t mq_return = mq_open("/mq_return_sender", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes); //return from aocs_dispatcher
@@ -65,7 +120,7 @@ void *msg_dis(void *arg) {
     if (mqdes_dis == -1 || mqdes_tm == -1 || mqdes_tc == -1) {
         perror("mq_open");  
         pthread_exit(NULL);
-    } 
+    }  
 
     //while (1) {   
         //Message send_msg = {0};
@@ -89,18 +144,27 @@ void *msg_dis(void *arg) {
           
           if (receive_msg.type == TM_RETURN) {
             printf("- RETURN TM -\n");
-            printf("Type : %u\n", receive_msg.type);
+            printf("Type : %u\n", receive_msg.type); 
             printf("Respond ModuleID : %u\n", receive_msg.mdid);
             printf("Respond TelemetryID : %u\n", receive_msg.req_id);
             printf("-------------------------------------------\n");
+            send_msg.type = receive_msg.type;
+            send_msg.mdid = receive_msg.mdid;
+            send_msg.req_id = receive_msg.req_id;
+            send_msg.val = receive_msg.val;
+            return_csp(NULL);
           }  
           else {
             printf("- REQUEST NO TYPE -\n");
             printf("Type : %u\n", send_msg.type);
-            printf("Receive ModuleID : %u\n", send_msg.mdid);
+            printf("Receive ModuleID : %u\n", send_msg.mdid); 
             printf("Receive TelemetryID : %u\n", send_msg.req_id);
             printf("No Type\n"); 
             printf("-------------------------------------------\n");
+            send_msg.type = receive_msg.type;
+            send_msg.mdid = receive_msg.mdid;
+            send_msg.req_id = receive_msg.req_id;
+            return_csp(NULL);
           }       
         }
         else if (send_msg.type == TM_REQUEST && send_msg.mdid == 2 && send_msg.req_id != 0) {
@@ -123,6 +187,10 @@ void *msg_dis(void *arg) {
               printf("Respond ModuleID : %u\n", receive_msg.mdid);
               printf("Respond TelemetryID : %u\n", receive_msg.req_id);
               printf("-------------------------------------------\n");
+              send_msg.type = receive_msg.type;
+            send_msg.mdid = receive_msg.mdid;
+            send_msg.req_id = receive_msg.req_id;
+            return_csp(NULL);
             }         
         }
         
@@ -145,6 +213,10 @@ void *msg_dis(void *arg) {
               printf("Respond ModuleID : %u\n", receive_msg.mdid);
               printf("Respond TelecommandID : %u\n", receive_msg.req_id);
               printf("-------------------------------------------\n");
+              send_msg.type = receive_msg.type;
+            send_msg.mdid = receive_msg.mdid;
+            send_msg.req_id = receive_msg.req_id;
+            return_csp(NULL);
             }  
                    
             else if (receive_msg.type == TC_RETURN ) {
@@ -153,6 +225,10 @@ void *msg_dis(void *arg) {
               printf("Respond ModuleID : %u\n", receive_msg.mdid);
               printf("Respond TelecommandID : %u\n", receive_msg.req_id);
               printf("-------------------------------------------\n");
+              send_msg.type = receive_msg.type;
+              send_msg.mdid = receive_msg.mdid;
+              send_msg.req_id = receive_msg.req_id;
+            return_csp(NULL);
             }  
         } 
         else {
@@ -162,8 +238,12 @@ void *msg_dis(void *arg) {
             printf("Receive TCID/TMID : %u\n", send_msg.req_id);
             printf("No Type\n"); 
             printf("-------------------------------------------\n");
+            send_msg.type = receive_msg.type;
+            send_msg.mdid = receive_msg.mdid;
+            send_msg.req_id = receive_msg.req_id;
+            return_csp(NULL);            
         } 
-    //}  
+    //}   
 
 //    mq_close(mqdes_dis);   
 //    mq_close(mqdes_tm);
@@ -194,7 +274,7 @@ void server(void) {
 			continue;
 		}
     csp_packet_t *packet;
-		while ((packet = csp_read(conn, 50)) != NULL) {
+		while ((packet = csp_read(conn, 50)) != NULL) {   
 			switch (csp_conn_dport(conn)) {
   			case SERVER_PORT:
   				/* Process packet here */
@@ -204,22 +284,23 @@ void server(void) {
           csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
           csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
           csp_print("Packet : %u\n",packet);
-          msg_dis(NULL);
-  				csp_buffer_free(packet);
-  				++server_received;                               
-  				break; 
+          csp_print("Packet length set to: %u\n", packet->length);                                        
+//  				csp_buffer_free(packet);
+//  				++server_received; 
+          csp_close(conn);      
+          msg_dis(NULL);                          
+  				break;  
   
   			default:
   				/* Call the default CSP service handler, handle pings, buffer use, etc. */
   				csp_service_handler(packet);
   				break;
-		  }
-		}
+		  } 
+		} 
  
 		/* Close current connection */
-		csp_close(conn); 
+		csp_close(conn);   
 	}
- 
 	return;  
 } 
 
@@ -231,7 +312,7 @@ static int csp_pthread_create(void * (*routine)(void *)) {
 	int ret;
 
 	if (pthread_attr_init(&attributes) != 0) {
-		return CSP_ERR_NOMEM;
+		return CSP_ERR_NOMEM; 
 	}
 	/* no need to join with thread to free its resources */
 	pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
@@ -301,6 +382,8 @@ int main(int argc, char * argv[]) {
     csp_print("Server started\n"); 
     
     server_start();
+    
+    
     while(1) { 
         sleep(run_duration_in_sec);
 
