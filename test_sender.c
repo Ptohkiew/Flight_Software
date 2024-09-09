@@ -29,9 +29,9 @@ static unsigned int successful_ping = 0;
 Message send_msg = {0}; 
 Message receive_msg = {0};
  
-void server(void) {
+void server(void) { 
 
-	csp_print("Server task started\n");
+	csp_print("\n-- Server task started --\n");
 
 	/* Create socket with no specific socket options, e.g. accepts CRC32, HMAC, etc. if enabled during compilation */
 	csp_socket_t sock = {0};
@@ -48,7 +48,7 @@ void server(void) {
     
     /* Wait for a new connection, 10000 mS timeout */
 		if ((conn2 = csp_accept(&sock, 10000)) == NULL) {
-      csp_print("Connection timeout\n");
+      csp_print("Connection timeout\n"); 
 			continue;
 		}
     csp_packet_t *packet2;
@@ -65,7 +65,6 @@ void server(void) {
           csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
           csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
           csp_print("Receive Value : %u\n", receive_msg.val);
-          csp_print("Packet : %u\n",packet2);
           csp_print("------------------------------\n\n");
   				csp_buffer_free(packet2);                               
   				break;   
@@ -165,8 +164,8 @@ int main(int argc, char * argv[]) {
             csp_print("Ping succeeded for address %u: %d [mS]\n", server_address, result);
         }    
 
-        csp_reboot(server_address);
-		    csp_print("reboot system request sent to address: %u\n", server_address);
+//        csp_reboot(server_address);
+//		    csp_print("reboot system request sent to address: %u\n", server_address);
         /* 1. Connect to host on 'server_address', port SERVER_PORT with regular UDP-like protocol and 1000 ms timeout */
     		csp_conn_t * conn = csp_connect(CSP_PRIO_NORM, server_address, SERVER_PORT, 1000, CSP_O_NONE);
     		if (conn == NULL) {
