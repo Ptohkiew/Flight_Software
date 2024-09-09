@@ -16,8 +16,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <string.h>
 #include <stdint.h>
 #include <sys/resource.h>
 #include <time.h>
@@ -29,7 +27,6 @@ int server_start(void);
 
 /* Server port, the port the server listens on for incoming connections from the client. */
 #define SERVER_PORT		15
-#define SERVER_PORT2		1
 
 /* Commandline options */
 static uint8_t server_address = 1;
@@ -46,7 +43,7 @@ Message receive_msg = {0};
 mqd_t mqdes_dis, mqdes_tm, mqdes_tc,mqdes_obc;
 
 csp_usart_conf_t uart_conf = { 
-     .device =  "/dev/serial0",
+     .device =  "/dev/serial0", 
      .baudrate = 115200, /* supported on all platforms */
      .databits = 8,
      .stopbits = 1,
@@ -57,7 +54,6 @@ csp_iface_t *kiss_iface = NULL;
 
 void *return_csp(void *arg){
     csp_conn_t * conn2 = csp_connect(CSP_PRIO_NORM, server_address, SERVER_PORT, 1000, CSP_O_NONE);
-    csp_print("Destination port: %u\n", csp_conn_dport(conn2));
 
     if (conn2 == NULL) {
         csp_print("Connection failed\n");
@@ -71,14 +67,7 @@ void *return_csp(void *arg){
         return NULL;
     }
             
-    printf("Type : %u\n", receive_msg.type); 
-    printf("Respond ModuleID : %u\n", receive_msg.mdid);
-    printf("Respond TelemetryID : %u\n", receive_msg.req_id);
-    printf("-------------------------------------------\n");
-    csp_print("Sending Type: %u, MDID: %u, TelemetryID: %u\n", send_msg.type, send_msg.mdid, send_msg.req_id);
-            
     memcpy(packet2->data, &receive_msg, sizeof(receive_msg));
-    csp_print("Packet data before sending: Type: %u, MDID: %u, TelemetryID: %u\n", receive_msg.type, receive_msg.mdid, receive_msg.req_id);
 //    int result = csp_ping(server_address, 5000, 100, CSP_O_NONE);
 //		csp_print("Ping address: %u, result %d [mS]\n", server_address, result);
 //        // Increment successful_ping if ping was successful
@@ -91,24 +80,21 @@ void *return_csp(void *arg){
 //    csp_print("Interfaces\r\n");
 //    csp_iflist_print();
     // ตรวจสอบขนาดของ send_msg
-    csp_print("Size of send_msg: %zu\n", sizeof(receive_msg));
     
     // ตั้งค่า packet->length ให้เท่ากับขนาดของ send_msg
     packet2->length = sizeof(receive_msg);
     
     // ตรวจสอบ packet->length หลังตั้งค่า
-    csp_print("Packet length set to: %u\n", packet2->length);
-
+    //csp_print("Packet length set to: %u\n", packet2->length);
 
     csp_send(conn2, packet2);  
-    csp_print("Packet sent: %u\n", packet2);
     
     csp_buffer_free(packet2);
     csp_close(conn2);
     
     return NULL; 
 }  
-  
+   
 void *msg_dis(void *arg) {
     mqdes_tm = mq_open("/mq_tm", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
     mqdes_tc = mq_open("/mq_tc", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR, &attributes);
@@ -126,7 +112,7 @@ void *msg_dis(void *arg) {
         //Message send_msg = {0};
         //Message receive_msg = {0};  
         send_msg.type = receive_msg.type;
-        send_msg.mdid = receive_msg.mdid;
+        send_msg.mdid = receive_msg.mdid; 
         send_msg.req_id = receive_msg.req_id;
         if (send_msg.type == TM_REQUEST && send_msg.mdid == 1 && send_msg.req_id > 0 && send_msg.req_id <= 17) {
           printf("- REQUEST TM -\n"); 
@@ -280,11 +266,11 @@ void server(void) {
   				/* Process packet here */
   				//csp_print("Packet received on SERVER_PORT: %s\n", (char *) packet->data);
           memcpy(&receive_msg, packet->data, packet->length);
-          csp_print("Type : %u\n", receive_msg.type);
-          csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
-          csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
-          csp_print("Packet : %u\n",packet);
-          csp_print("Packet length set to: %u\n", packet->length);                                        
+//          csp_print("Type : %u\n", receive_msg.type);
+//          csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
+//          csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
+//          csp_print("Packet : %u\n",packet);
+//          csp_print("Packet length set to: %u\n", packet->length);                                        
 //  				csp_buffer_free(packet);
 //  				++server_received; 
           csp_close(conn);      
@@ -366,12 +352,12 @@ int main(int argc, char * argv[]) {
         return result;
     } else {
         printf("KISS interface added successfully\n");
-    }
+    } 
      
     kiss_iface->addr = server_address;
     kiss_iface->is_default = 1;    
     /* Start router */
-    router_start();
+    router_start(); 
     
     csp_print("Connection table\r\n");
     csp_conn_print_table();
