@@ -13,12 +13,18 @@
 #include <csp/interfaces/csp_if_zmqhub.h>
 #include <stdio.h>
 #include "/home/pi3/libcsp/test/message.h"
-
+#include <termios.h>
+#include <errno.h>
+#include <zlib.h>
 /* This function must be provided in arch specific way */
 int router_start(void);
 
 /* Server port, the port the server listens on for incoming connections from the client. */
 #define SERVER_PORT 15
+
+#ifndef SENDER_ID
+#define SENDER_ID 1  // Default value if no value is passed during compilation
+#endif
 
 /* Commandline options */
 static uint8_t server_address = 1;
@@ -29,224 +35,344 @@ uint16_t addr = 10;  // Address สำหรับ interface นี้ (คุ�
 
 Message send_msg = {0};
 Message receive_msg = {0};
+int CRCflags;
+
+void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, uint16_t * destination) {
+	size_t len = strlen(hex_string);
+	size_t chunk_count = 0;  // Counter for the number of 32-bit chunks processed
+	size_t packet_idx = 0;
+	size_t i = 0;
+	// for (size_t i = 0; i < 11; i += 2) {
+	char temp[9] = {0};  // Buffer for 8 hex characters + null terminator
+
+	strncpy(temp, &hex_string[i], 4);
+	// Convert the hex chunk to decimal considering little-endian order
+	unsigned int decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	// Print the decimal value
+	printf("32-bit chunk pri: %s -> Decimal: %u\n", temp, decimal_value);
+
+	unsigned int pri = (decimal_value >> 14);
+	pri = pri & 0X3;
+	// uint8_t pri_8bit = (uint8_t) pri;
+	printf("pri: : %u\n", pri);
+	memcpy(&packet->id.pri, &pri, sizeof(pri));
+	printf("pri: : %u\n", packet->id.pri);
+	unsigned int bitdst = decimal_value & 0X3FFF;
+	memcpy(&packet->id.dst, &bitdst, sizeof(unsigned int));
+	printf("des : %u\n", packet->id.dst);
+
+	*destination = packet->id.dst;
+
+	printf("dest : %u\n", destination);
+
+	// // Copy 8 hex characters (32 bits) from the hex string
+	strncpy(temp, &hex_string[i + 4], 4);
+	// Convert the hex chunk to decimal considering little-endian order
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	// Print the decimal value
+	printf("32-bit chunk destination: %s -> Decimal: %u\n", temp, decimal_value);
+
+	pri = (decimal_value >> 2);
+	pri = pri & 0X3FFF;
+	memcpy(&packet->id.src, &pri, sizeof(unsigned int));
+	unsigned int firstdport = decimal_value & 0X3;
+	// memcpy(&packet->id.dport, &pri, sizeof(unsigned int));
+
+	/// memcpy(&packet->id.dst, &decimal_value, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 8], 4);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk source : %s -> Decimal: %u\n", temp, decimal_value);
+
+	unsigned int secdport = decimal_value >> 12;
+	secdport = secdport & 0XF;
+	uint32_t dport = firstdport << 4 | secdport;
+	memcpy(&packet->id.dport, &dport, sizeof(unsigned int));
+
+	pri = (decimal_value >> 6);
+	pri = pri & 0X3F;
+	memcpy(&packet->id.sport, &pri, sizeof(unsigned int));
+
+	unsigned int flags = decimal_value & 0X3F;
+	memcpy(&packet->id.flags, &flags, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 12], 8);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk type : %s -> Decimal: %u\n", temp, decimal_value);
+	memcpy(&receive_msg.type, &decimal_value, sizeof(unsigned int));
+
+	// strncpy(temp, &hex_string[i+20], 4);
+	// decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	// printf("32-bit chunk: %s -> Decimal: %u\n", temp, decimal_value);
+	// memcpy(&packet->id.flags, &decimal_value, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 20], 8);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk mdid : %s -> Decimal: %u\n", temp, decimal_value);
+	memcpy(&receive_msg.mdid, &decimal_value, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 28], 8);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk req_id : %s -> Decimal: %u\n", temp, decimal_value);
+	memcpy(&receive_msg.req_id, &decimal_value, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 36], 8);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk param : %s -> Decimal: %u\n", temp, decimal_value);
+	memcpy(&receive_msg.param, &decimal_value, sizeof(unsigned int));
+
+	strncpy(temp, &hex_string[i + 44], 8);
+	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	printf("32-bit chunk val : %s -> Decimal: %u\n", temp, decimal_value);
+	memcpy(&receive_msg.val, &decimal_value, sizeof(unsigned int));
+
+	chunk_count++;  // Increment the chunk counter
+					//}
+}
 
 void server(void) {
-
-	csp_print("\n-- Server task started --\n");
-
-	/* Create socket with no specific socket options, e.g. accepts CRC32, HMAC, etc. if enabled during compilation */
-	csp_socket_t sock = {0};
-
-	/* Bind socket to all ports, e.g. all incoming connections will be handled here */
-	csp_bind(&sock, CSP_ANY);
-
-	/* Create a backlog of 10 connections, i.e. up to 10 new connections can be queued */
-	csp_listen(&sock, 10);
-
-	/* Wait for connections and then process packets on the connection */
+	printf("HIIII\n");
 	while (1) {
-		csp_conn_t * conn2;
+		int uart0_filestream = open("/dev/serial0", O_RDONLY | O_NOCTTY);
 
-		/* Wait for a new connection, 10000 mS timeout */
-		if ((conn2 = csp_accept(&sock, 10000)) == NULL) {
-			csp_print("Connection timeout\n");
-			continue;
+		if (uart0_filestream == -1) {
+			printf("Error - Unable to open UART.\n");
 		}
-		csp_packet_t * packet2;
-		while ((packet2 = csp_read(conn2, 50)) != NULL) {
-			switch (csp_conn_dport(conn2)) {
-				default:
-					/* Process packet here */
-					if (packet2->length > sizeof(receive_msg)) {
-						csp_print("Packet size too large for receive_msg buffer\n");
-						return;
-					}
-					memcpy(&receive_msg, packet2->data, packet2->length);  // if change to send_msg can use
-																		   //          csp_print("Receive Type ID : %u\n", receive_msg.type);
-																		   //          csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
-																		   //          csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
-																		   //          csp_print("Receive Value : %u\n", receive_msg.val);
-																		   //          csp_print("------------------------------\n\n");
-					if (receive_msg.type == TC_RETURN) {
-						if (receive_msg.mdid == 1 && receive_msg.req_id == 1) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Reboot ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 2) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Shutdown ----\n");
-							printf("-------------------------------------------\n");
-							continue;
 
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 3) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Cancel ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 4) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- New log ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 5) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Edit number of file ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 6) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Edit size of file ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						} else if (send_msg.mdid == 1 && send_msg.req_id == 7) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telecommand ID : %u\n", receive_msg.req_id);
-							printf("---- Edit period ----\n");
-							printf("-------------------------------------------\n");
-							continue;
-						}
-					}
-					if (receive_msg.type == TM_RETURN) {
-						if (send_msg.mdid == 1 && send_msg.req_id == 1) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("CPU Temperature: %d C\n", receive_msg.val);
-							float cpu_temp = receive_msg.val;
-							cpu_temp *= 0.001;
-							printf("CPU Temp: %.3f C\n", cpu_temp);
-							printf("-------------------------------------------\n");
-							receive_msg.type = TM_REQUEST;
-						}
+		struct termios options;
+		tcgetattr(uart0_filestream, &options);
+		options.c_cflag = B115200 | CS8 | CLOCAL | CREAD;
+		options.c_iflag = IGNPAR;
+		options.c_oflag = 0;
+		options.c_lflag = 0;
+		tcflush(uart0_filestream, TCIFLUSH);
+		tcsetattr(uart0_filestream, TCSANOW, &options);
 
-						else if (send_msg.mdid == 1 && send_msg.req_id == 2) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Total space: %u MB\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 3) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Used space: %u MB\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 4) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Available space: %u MB\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 5) {
-							uint8_t ip_address[4];
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							ip_address[0] = (receive_msg.val >> 24);
-							ip_address[1] = (receive_msg.val >> 16);
-							ip_address[2] = (receive_msg.val >> 8);
-							ip_address[3] = receive_msg.val;
-							printf("IP Address : %hhu.%hhu.%hhu.%hhu\n", ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
+		unsigned char rx_buffer[256];                         // Buffer สำหรับข้อมูลที่รับ
+		char combined_buffer[512];                            // Buffer สำหรับรวมข้อมูล
+		memset(combined_buffer, 0, sizeof(combined_buffer));  // เคลียร์ buffer
 
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 6) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							float cpu_usage = receive_msg.val;
-							cpu_usage *= 0.01;
-							printf("Cpu usage : %.2f\n", cpu_usage);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 7) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							float cpu_peak = receive_msg.val;
-							cpu_peak *= 0.01;
-							printf("Cpu peak : %.2f\n", cpu_peak);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 9) {
-							uint16_t ram[2];
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							ram[0] = (receive_msg.val >> 16);
-							ram[1] = receive_msg.val;
-							printf("Ram usage : %u/%u MB\n", ram[1], ram[0]);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 10) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Ram peak : %u MB\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 14) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Shutdown Time : %u\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 15) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Remaining shutdown time : %u\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 16) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("Shutdown type : %u\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						} else if (receive_msg.mdid == 1 && send_msg.req_id == 17) {
-							printf("Type : %u\n", receive_msg.type);
-							printf("Module ID : %u\n", receive_msg.mdid);
-							printf("Telemetry ID : %u\n", receive_msg.req_id);
-							printf("Telemetry Parameter : %u\n", receive_msg.param);
-							printf("OBC Time : %u\n", receive_msg.val);
-							printf("-------------------------------------------\n");
-						}
-					} else {
-						printf("No Type\n");
-						printf("-------------------------------------------\n");
-					}
-					csp_buffer_free(packet2);
-					break;
+		for (int i = 0; i < 2; i++) {
+			int rx_length = read(uart0_filestream, rx_buffer, sizeof(rx_buffer) - 1);
+
+			if (rx_length > 0) {
+				rx_buffer[rx_length] = '\0';  // Null terminator
+				printf("Bytes read: %d\n", rx_length);
+
+				// รวมข้อมูลที่รับเข้ากับ combined_buffer
+				strncat(combined_buffer, rx_buffer, sizeof(combined_buffer) - strlen(combined_buffer) - 1);
+
+				printf("Combined Received: %s\n", combined_buffer);  // แสดงข้อมูลที่รวม
+			} else if (rx_length < 0) {
+				printf("Error: %s\n", strerror(errno));
+			}
+
+			sleep(1);
+			printf("hi\n");
+		}
+		csp_packet_t * packet;
+		packet->id.pri = 0;
+		size_t receive_msg_size = sizeof(receive_msg);
+		// packet->length = sizeof(receive_msg);
+		//  ขนาดของ packet->data (ไม่สามารถรู้ได้เพราะเป็น pointer แต่ใช้ packet_length แทน)
+		printf("Size of receive_msg: %zu bytes\n", receive_msg_size);
+		printf("Size of packet->data (from packet_length): %d bytes\n", packet->length);
+		printf("Combined Received: %s\n", combined_buffer);
+		uint16_t destination;
+		csp_print("pri : %u\n", packet->id.pri);
+		convert_header_to_decimal(combined_buffer, packet, &destination);
+		// convert_hex_string_to_decimal(combined_buffer, packet);
+		printf("packet : %u\n", packet->data);
+		// printf("packet : %u\n", packet->data[0]);
+		// printf("packet : %u\n", packet->data[1]);
+		// printf("packet : %u\n", packet->data[2]);
+		// memcpy(&receive_msg, packet->data, packet->length);
+		csp_print("Type : %u\n", receive_msg.type);
+		csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
+		csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
+		csp_print("pri : %u\n", packet->id.pri);
+		csp_print("dst: %u\n", destination);
+		csp_print("src: %u\n", packet->id.src);
+		csp_print("dport: %u\n", packet->id.dport);
+		csp_print("sport: %u\n", packet->id.sport);
+		csp_print("flags: %u\n", packet->id.flags);
+		// if(destination == SENDER_ID){
+		//     break;
+		// }
+
+		close(uart0_filestream);
+		printf("HI\n");
+		if (receive_msg.type == TC_RETURN) {
+			if (receive_msg.mdid == 1 && receive_msg.req_id == 1) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Reboot ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 2) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Shutdown ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 3) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Cancel ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 4) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- New log ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 5) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Edit number of file ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 6) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Edit size of file ----\n");
+				printf("-------------------------------------------\n");
+				continue;
+			} else if (send_msg.mdid == 1 && send_msg.req_id == 7) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telecommand ID : %u\n", receive_msg.req_id);
+				printf("---- Edit period ----\n");
+				printf("-------------------------------------------\n");
+				continue;
 			}
 		}
+		if (receive_msg.type == TM_RETURN) {
+			if (send_msg.mdid == 1 && send_msg.req_id == 1) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("CPU Temperature: %d C\n", receive_msg.val);
+				float cpu_temp = receive_msg.val;
+				cpu_temp *= 0.001;
+				printf("CPU Temp: %.3f C\n", cpu_temp);
+				printf("-------------------------------------------\n");
+				receive_msg.type = TM_REQUEST;
+			}
 
-		/* Close current connection */
-		csp_close(conn2);
-		break;
+			else if (send_msg.mdid == 1 && send_msg.req_id == 2) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Total space: %u MB\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 3) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Used space: %u MB\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 4) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Available space: %u MB\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 5) {
+				uint8_t ip_address[4];
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				ip_address[0] = (receive_msg.val >> 24);
+				ip_address[1] = (receive_msg.val >> 16);
+				ip_address[2] = (receive_msg.val >> 8);
+				ip_address[3] = receive_msg.val;
+				printf("IP Address : %hhu.%hhu.%hhu.%hhu\n", ip_address[0], ip_address[1], ip_address[2], ip_address[3]);
+
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 6) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				float cpu_usage = receive_msg.val;
+				cpu_usage *= 0.01;
+				printf("Cpu usage : %.2f\n", cpu_usage);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 7) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				float cpu_peak = receive_msg.val;
+				cpu_peak *= 0.01;
+				printf("Cpu peak : %.2f\n", cpu_peak);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 9) {
+				uint16_t ram[2];
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				ram[0] = (receive_msg.val >> 16);
+				ram[1] = receive_msg.val;
+				printf("Ram usage : %u/%u MB\n", ram[1], ram[0]);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 10) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Ram peak : %u MB\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 14) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Shutdown Time : %u\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 15) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Remaining shutdown time : %u\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 16) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("Shutdown type : %u\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			} else if (receive_msg.mdid == 1 && send_msg.req_id == 17) {
+				printf("Type : %u\n", receive_msg.type);
+				printf("Module ID : %u\n", receive_msg.mdid);
+				printf("Telemetry ID : %u\n", receive_msg.req_id);
+				printf("Telemetry Parameter : %u\n", receive_msg.param);
+				printf("OBC Time : %u\n", receive_msg.val);
+				printf("-------------------------------------------\n");
+			}
+		} else {
+			printf("No Type\n");
+			printf("-------------------------------------------\n");
+		}
+		return;
 	}
-
-	return;
 }
 
 static int csp_pthread_create(void * (*routine)(void *)) {
@@ -429,10 +555,52 @@ void convert_hex_string_to_decimal(const char * hex_string, csp_packet_t * packe
 //     }
 // }
 
+void hexfirst(unsigned int value, unsigned int * combinedValue) {
+	unsigned int shiftedValue = value >> 16;  // Shift ค่าไป 16 บิต
+	*combinedValue = shiftedValue & 0xFFFF;   // ใช้ bitmask เพื่อเก็บ 16 บิตสุดท้าย
+}
+
+void hexsec(unsigned int value, unsigned int * combinedValue) {
+	*combinedValue = value & 0xFFFF;
+}
+
+void splitBits(uint32_t value, uint8_t * bitArray) {
+	for (int i = 0; i < 32; i++) {
+		bitArray[i] = (value >> (31 - i)) & 1;
+	}
+	for (int i = 0; i < 32; i++) {
+		printf("%u", bitArray[i]);
+	}
+	printf("\n");
+}
+
+void toBinaryString(unsigned int num, char * binaryStr) {
+	for (int i = 15; i >= 0; i--) {
+		// กำหนดค่าบิตให้กับสตริง
+		binaryStr[15 - i] = (num >> i) & 1 ? '1' : '0';
+	}
+	binaryStr[16] = '\0';  // เพิ่ม null terminator ที่ส่วนท้าย
+}
+
 int main(int argc, char * argv[]) {
 	int ret = EXIT_SUCCESS;
 	int type, mdid, req_id;
+	uint16_t header1[16];
+	uint16_t header2[16];
+	uint16_t header3[16];
+	// aaa[0] --> aaa[15]
 
+	uint16_t bitpacket[15];
+
+	typedef struct {
+		uint8_t bittype[32];
+		uint8_t bitmdid[32];
+		uint8_t bitreq_id[32];
+		uint8_t bitparam[32];
+		uint8_t bitval[32];
+	} bitmsg;
+
+	bitmsg sendbit = {0};
 	csp_print("Initialising CSP\n");
 
 	/* Init CSP */
@@ -441,25 +609,25 @@ int main(int argc, char * argv[]) {
 	/* Start router */
 	router_start();
 
-	csp_iface_t * kiss_iface = NULL;
-	csp_usart_conf_t uart_conf = {
-		.device = "/dev/serial0",
-		.baudrate = 115200, /* supported on all platforms */
-		.databits = 8,
-		.stopbits = 1,
-		.paritysetting = 0,
-	};
-	// open UART and ADD Interface
-	int result = csp_usart_open_and_add_kiss_interface(&uart_conf, CSP_IF_KISS_DEFAULT_NAME, addr, &kiss_iface);  // เพิ่ม addr
-	if (result != CSP_ERR_NONE) {
-		printf("Error adding KISS interface: %d\n", result);
-		return result;
-	} else {
-		printf("KISS interface added successfully\n");
-	}
+	// csp_iface_t * kiss_iface = NULL;
+	// csp_usart_conf_t uart_conf = {
+	// 	.device = "/dev/serial0",
+	// 	.baudrate = 115200, /* supported on all platforms */
+	// 	.databits = 8,
+	// 	.stopbits = 1,
+	// 	.paritysetting = 0,
+	// };
+	// // open UART and ADD Interface
+	// int result = csp_usart_open_and_add_kiss_interface(&uart_conf, CSP_IF_KISS_DEFAULT_NAME, addr, &kiss_iface);  // เพิ่ม addr
+	// if (result != CSP_ERR_NONE) {
+	// 	printf("Error adding KISS interface: %d\n", result);
+	// 	return result;
+	// } else {
+	// 	printf("KISS interface added successfully\n");
+	// }
 
-	kiss_iface->addr = client_address;
-	kiss_iface->is_default = 1;
+	// kiss_iface->addr = client_address;
+	// kiss_iface->is_default = 1;
 
 	csp_print("Client started\n");
 
@@ -470,23 +638,23 @@ int main(int argc, char * argv[]) {
 	csp_iflist_print();
 
 	while (1) {
-		int result = csp_ping(server_address, 1000, 100, CSP_O_NONE);
-		if (result < 0) {
-			csp_print("Ping failed for address %u: %d\n", server_address, result);
-		} else {
-			csp_print("Ping succeeded for address %u: %d [mS]\n", server_address, result);
-		}
+		// int result = csp_ping(server_address, 1000, 100, CSP_O_NONE);
+		// if (result < 0) {
+		// 	csp_print("Ping failed for address %u: %d\n", server_address, result);
+		// } else {
+		// 	csp_print("Ping succeeded for address %u: %d [mS]\n", server_address, result);
+		// }
 
 		//        csp_reboot(server_address);
 		//		    csp_print("reboot system request sent to address: %u\n", server_address);
 		/* 1. Connect to host on 'server_address', port SERVER_PORT with regular UDP-like protocol and 1000 ms timeout */
-		csp_conn_t * conn = csp_connect(CSP_PRIO_NORM, server_address, SERVER_PORT, 1000, CSP_O_NONE);
-		if (conn == NULL) {
-			/* Connect failed */
-			csp_print("Connection failed\n");
-			ret = EXIT_FAILURE;
-			break;
-		}
+		// csp_conn_t * conn = csp_connect(CSP_PRIO_NORM, server_address, SERVER_PORT, 1000, CSP_O_NONE);
+		// if (conn == NULL) {
+		// 	/* Connect failed */
+		// 	csp_print("Connection failed\n");
+		// 	ret = EXIT_FAILURE;
+		// 	break;
+		// }
 
 		do {
 			printf("Enter Type ID : ");
@@ -521,6 +689,54 @@ int main(int argc, char * argv[]) {
 		send_msg.type = (unsigned int)type;
 		send_msg.mdid = (unsigned int)mdid;
 		send_msg.req_id = (unsigned int)req_id;
+
+		// for (int i = 0; i < 32; i++) {
+		// sendbit.bittype[i] = (send_msg.type >> (31 - i)) & 1;  // แยกบิตทีละบิต (จากบิตที่มากไปน้อย)
+		// }
+		// // แสดงผลแต่ละบิตใน sendbit.bittype
+		// for (int i = 0; i < 32; i++) {
+		// 	printf("%u", sendbit.bittype[i]);
+		// }
+		// printf("\n");
+
+		// for (int i = 0; i < 32; i++) {
+		// sendbit.bitmdid[i] = (send_msg.mdid >> (31 - i)) & 1;  // แยกบิตทีละบิต (จากบิตที่มากไปน้อย)
+		// }
+		// // แสดงผลแต่ละบิตใน sendbit.bittype
+		// for (int i = 0; i < 32; i++) {
+		// 	printf("%u", sendbit.bitmdid[i]);
+		// }
+		// printf("\n");
+
+		// for (int i = 0; i < 32; i++) {
+		// sendbit.bitreq_id[i] = (send_msg.req_id >> (31 - i)) & 1;  // แยกบิตทีละบิต (จากบิตที่มากไปน้อย)
+		// }
+		// // แสดงผลแต่ละบิตใน sendbit.bittype
+		// for (int i = 0; i < 32; i++) {
+		// 	printf("%u", sendbit.bitreq_id[i]);
+		// }
+		// printf("\n");
+
+		// for (int i = 0; i < 32; i++) {
+		// sendbit.bitparam[i] = (send_msg.param >> (31 - i)) & 1;  // แยกบิตทีละบิต (จากบิตที่มากไปน้อย)
+		// }
+		// // แสดงผลแต่ละบิตใน sendbit.bittype
+		// for (int i = 0; i < 32; i++) {
+		// 	printf("%u", sendbit.bitparam[i]);
+		// }
+		// printf("\n");
+
+		// for (int i = 0; i < 32; i++) {
+		// sendbit.bitval[i] = (send_msg.val >> (31 - i)) & 1;  // แยกบิตทีละบิต (จากบิตที่มากไปน้อย)
+		// }
+		// // แสดงผลแต่ละบิตใน sendbit.bittype
+		// for (int i = 0; i < 32; i++) {
+		// 	printf("%u", sendbit.bitval[i]);
+		// }
+		// printf("\n");
+
+		// send_msg.mdid;
+		// send_msg.req_id;
 
 		if (send_msg.type == TC_REQUEST && send_msg.mdid == 1 && send_msg.req_id == 1 || send_msg.type == TC_REQUEST && send_msg.mdid == 1 && send_msg.req_id == 2) {
 			int delay;
@@ -574,6 +790,19 @@ int main(int argc, char * argv[]) {
 			} while (period < 0);
 			send_msg.param = (unsigned int)period;
 		}
+		printf("type size : %u\n", sizeof(send_msg.type));
+
+		splitBits(send_msg.type, sendbit.bittype);
+		splitBits(send_msg.mdid, sendbit.bitmdid);
+		splitBits(send_msg.req_id, sendbit.bitreq_id);
+		splitBits(send_msg.param, sendbit.bitparam);
+		splitBits(send_msg.val, sendbit.bitval);
+
+		printf("type : %u\n", sendbit.bittype[31]);
+		printf("mdid : %u\n", sendbit.bitmdid[31]);
+		printf("req_id : %u\n", sendbit.bitreq_id[31]);
+		printf("param : %u\n", sendbit.bitparam[31]);
+		printf("val : %u\n", sendbit.bitval[31]);
 
 		/* 2. Get packet buffer for message/data */
 		csp_packet_t * packet = csp_buffer_get(0);
@@ -583,20 +812,305 @@ int main(int argc, char * argv[]) {
 			ret = EXIT_FAILURE;
 			break;
 		}
-		packet->id.pri = CSP_PRIO_HIGH;  // Priority
-		packet->id.dst = 2;              // Destination address
-		packet->id.src = 1;              // Source address
-		packet->id.dport = 5;            // Destination port
-		packet->id.sport = 10;           // Source port
-										 /* 3. Copy data to packet */
+
+		packet->id.pri = 2;     // Priority
+		packet->id.dst = 3;     // Destination address
+		packet->id.src = 1;     // Source address
+		packet->id.dport = 5;   // Destination port
+		packet->id.sport = 10;  // Source port
+		packet->id.flags |= (CSP_FHMAC | CSP_FCRC32);
+
+		char binaryStr[17];  // สตริงเก็บเลขฐาน 2 ขนาด 17 (16 บิต + null terminator)
+		unsigned int binaryValue = 0;
+
+		// toBinaryString(packet->id.dst, binaryStr); // แปลงเป็นเลขฐาน 2 และเก็บใน binaryStr
+		// printf("Binary representation of packet->id.dst (%u): %s\n", packet->id.dst, binaryStr);
+
+		// for (int i = 0; i < 16; i++) {
+		// binaryValue <<= 1; // เลื่อนบิตไปทางซ้าย
+		// if (packet->id.pri & (1 << (15 - i))) { // ถ้า bit ที่ i เป็น 1
+		//     binaryValue |= 1; // ทำ OR เพื่อรวมบิต
+		// }
+		// }
+
+		// printf("Original value (%u) in binary: ", packet->id.pri);
+		// for (int i = 15; i >= 0; i--) {
+		// 	printf("%u", (packet->id.pri >> i) & 1);
+		// }
+		// printf("\n");
+
+		// packet->id.pri = binaryValue;
+
+		// unsigned int shifthd1;     // ตัวแปรสำหรับเก็บค่าที่ถูก shift
+		// unsigned int combinedValue;
+		// // array สำหรับเก็บ 16 บิต
+
+		// // Shift บิต 2 บิตของ dst ไปทางซ้าย 14 บิต
+		// shifthd1 = packet->id.pri << 14;
+		// combinedValue = shifthd1 | (packet->id.dst & 0x3FFF);  // ใช้ & กับ 0x3FFF เพื่อดึงเฉพาะ 14 บิต
+		// // นำบิตแต่ละตัวจาก shiftedDst ไปใส่ใน array 16 บิต
+		// for (int i = 0; i < 16; i++) {
+		// 	packet[0] = (combinedValue >> (15 - i)) & 1;
+		// }
+		// printf("16-bit array: ");
+		// for (int i = 0; i < 16; i++) {
+		// 	printf("%d", packet[0]);
+		// }
+		// printf("\n");
+
+		// unsigned int shiftedhd2;
+		// unsigned int combinedValue2;
+
+		// shiftedhd2 = packet->id.src << 2;
+		// combinedValue = shiftedhd2 | (packet->id.dport & 0x3) >> 4;
+		// for (int i = 0; i < 16; i++) {
+		// 	packet[1] = (combinedValue >> (15 - i)) & 1;
+		// }
+		// printf("16-bit array: ");
+		// for (int i = 0; i < 16; i++) {
+		// 	printf("%d", packet[1]);
+		// }
+		// printf("\n");
+
+		unsigned int shifthd1;  // ตัวแปรสำหรับเก็บค่าที่ถูก shift
+		unsigned int combinedValue;
+		// array สำหรับเก็บ 16 บิต
+
+		// Shift บิต 2 บิตของ dst ไปทางซ้าย 14 บิต
+		shifthd1 = packet->id.pri << 14;
+		combinedValue = shifthd1 | (packet->id.dst & 0x3FFF);  // ใช้ & กับ 0x3FFF เพื่อดึงเฉพาะ 14 บิต
+		bitpacket[0] = combinedValue;
+		printf("packet[0] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[0] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[0] as hexadecimal: 0x%04X\n", bitpacket[0]);
+
+		unsigned int combinedValue2;
+		unsigned int shiftedhd2;
+		shiftedhd2 = packet->id.src << 2;
+		combinedValue2 = shiftedhd2 | (packet->id.dport & 0x3) >> 4;
+		bitpacket[1] = combinedValue;
+		// เก็บค่า combinedValue ทั้งหมดใน packet[2] โดยตรง
+		bitpacket[1] = combinedValue2;
+
+		printf("packet[1] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[1] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[1] as hexadecimal: 0x%04X\n", bitpacket[1]);
+
+		unsigned int combinedValue3;
+		unsigned int shiftedhd3;
+		shiftedhd3 = packet->id.dport & 0xF;                                                    // เก็บ 4 บิตจาก dport
+		unsigned int shiftedsport = packet->id.sport & 0x3F;                                    // เก็บ 6 บิตจาก sport
+		combinedValue3 = (shiftedhd3 << 12) | (shiftedsport << 6) | (packet->id.flags & 0x3F);  // รวมบิต 16 บิต
+
+		// เก็บค่า combinedValue ทั้งหมดใน packet[2] โดยตรง
+		bitpacket[2] = combinedValue3;
+
+		printf("packet[2] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[2] >> i) & 1);  // แสดงบิตทีละบิต
+			if (i == 0 && (bitpacket[2] >> i) & 1 == 1) {
+				printf("\nCRC enable\n");
+				CRCflags = 1;
+			}
+		}
+		printf("\n");
+		printf("packet[2] as hexadecimal: 0x%04X\n", bitpacket[2]);
+
+		unsigned int combinedValue4;
+		hexfirst(send_msg.type, &combinedValue4);
+
+		// unsigned int shifttype;
+		// shifttype = send_msg.type >>16;
+		// unsigned int combinedValue4 = shifttype & 0xFFFF;
+		bitpacket[3] = combinedValue4;
+
+		printf("packet[3] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[3] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[3] as hexadecimal: 0x%04X\n", bitpacket[3]);
+
+		// shifttype = send_msg.type & 0xFFFF;
+
+		hexsec(send_msg.type, &combinedValue4);
+
+		bitpacket[4] = combinedValue4;
+		printf("packet[4] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[4] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[4] as hexadecimal: 0x%04X\n", bitpacket[4]);
+
+		// unsigned int shiftmdid;
+		// shiftmdid = send_msg.type >>16;
+		// unsigned int combinedValue5 = shiftmdid & 0xFFFF;
+		// bitpacket[5] = combinedValue5;
+
+		// printf("packet[5] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	printf("%u", (bitpacket[5] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		// printf("\n");
+
+		hexfirst(send_msg.mdid, &combinedValue4);
+		bitpacket[5] = combinedValue4;
+
+		printf("packet[5] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[5] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[5] as hexadecimal: 0x%04X\n", bitpacket[5]);
+
+		hexsec(send_msg.mdid, &combinedValue4);
+
+		bitpacket[6] = combinedValue4;
+		printf("packet[6] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[6] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[6] as hexadecimal: 0x%04X\n", bitpacket[6]);
+
+		hexfirst(send_msg.req_id, &combinedValue4);
+		bitpacket[7] = combinedValue4;
+
+		printf("packet[7] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[7] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[7] as hexadecimal: 0x%04X\n", bitpacket[7]);
+
+		hexsec(send_msg.req_id, &combinedValue4);
+
+		bitpacket[8] = combinedValue4;
+		printf("packet[8] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[8] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[8] as hexadecimal: 0x%04X\n", bitpacket[8]);
+
+		hexfirst(send_msg.param, &combinedValue4);
+		bitpacket[9] = combinedValue4;
+
+		printf("packet[9] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[9] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[9]);
+
+		hexsec(send_msg.param, &combinedValue4);
+
+		bitpacket[10] = combinedValue4;
+		printf("packet[10] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[10] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[10]);
+		hexfirst(send_msg.val, &combinedValue4);
+		bitpacket[11] = combinedValue4;
+
+		printf("packet[11] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[11] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[11] as hexadecimal: 0x%04X\n", bitpacket[11]);
+		hexsec(send_msg.val, &combinedValue4);
+
+		bitpacket[12] = combinedValue4;
+		printf("packet[12] as binary: ");
+		for (int i = 15; i >= 0; i--) {
+			printf("%u", (bitpacket[12] >> i) & 1);  // แสดงบิตทีละบิต
+		}
+		printf("\n");
+		printf("packet[12] as hexadecimal: 0x%04X\n", bitpacket[12]);
+		// shifttype = send_msg.type & 0xFFFF;
+		// bitpacket[4] = shifttype;
+
+		// printf("packet[4] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	printf("%u", (bitpacket[4] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		// printf("\n");
+		// unsigned long crc = crc32(0L, Z_NULL, 0);
+
+		// // คำนวณค่า CRC32 ของข้อมูลตั้งแต่ bitpacket[0] ถึง bitpacket[12]
+		// crc = crc32(crc, (const unsigned char *)bitpacket, 13 * sizeof(uint16_t));  // แคสต์ให้เป็น unsigned char*
+
+		// // แสดงผลค่า CRC32
+		// printf("CRC32: %lx\n", crc);  // แสดงผลเป็นเลขฐาน 16 (hexadecimal)
+
+		char hexString[60];
+		hexString[0] = '\0';  // เริ่มต้นสตริงให้ว่าง
+		for (int i = 0; i < 13; i++) {
+			char temp[10];                        // สตริงชั่วคราวเพื่อเก็บค่าฐานสิบหก
+			sprintf(temp, "%04X", bitpacket[i]);  // แปลงเป็นฐานสิบหก (4 หลัก)
+			strcat(hexString, temp);              // ต่อสตริง
+		}
+
+		printf("Combined hexadecimal string: %s\n", hexString);
+
+		unsigned long crc = crc32(0L, Z_NULL, 0);  // เริ่มต้นค่า CRC32
+		printf("CRC32: %lx\n", crc);
+		if (CRCflags == 1) {
+			printf("\nCRC enable\n");
+			// คำนวณค่า CRC32 ของข้อมูล
+			crc = crc32(crc, hexString, strlen(hexString));
+			// แสดงผลค่า CRC32
+			printf("CRC32: %lX\n", crc);  // แสดงผลค่าเป็นเลขฐาน 16 (hex)
+		}
+		char crcString[20];
+		sprintf(crcString, "%lX", crc);  // แปลงเป็นเลขฐาน 16 (hexadecimal)
+
+		strcat(hexString, crcString);
+		printf("Combined hexadecimal + CRC32 : %s\n", hexString);
+
+		// unsigned int shiftedhd3;
+		// unsigned int combinedValue3;
+		// //// แก้เลขให้ shift ให้ตรง
+		// //shiftedhd3 = packet->id.dport << 2;
+		// shiftedhd3 = packet->id.dport & 0xF;
+		// unsigned int shiftedsport;
+		// //shiftedsport = packet->id.sport << 2;
+
+		// shiftedsport = packet->id.sport & 0x3F;
+		// combinedValue = shiftedhd3 << 12 | (shiftedsport << 6) | packet->id.flags & 0x3F;
+		// for (int i = 0; i < 16; i++) {
+		// 	packet[2] = (combinedValue >> (15 - i)) & 1;
+		// }
+		// printf("16-bit array: ");
+		// for (int i = 0; i < 16; i++) {
+		// 	printf("%d", packet[0]);
+		// }
+		// printf("\n");
+
+		/* 3. Copy data to packet */
 		memcpy(packet->data, &send_msg, sizeof(send_msg));
+
+		for (int i = 0; i < sizeof(packet->data); i++) {
+			printf("%u", packet->data[i]);
+		}
+		// memcmp(packet->id, &packet->id,sizeof(csp_id_t));
 		printf("packet : %u\n", packet->data);
-		printf("pri: %u\n", packet->id.pri);
-		printf("flags: %u\n", packet->id.flags);
-		printf("src: %u\n", packet->id.src);
-		printf("dst: %u\n", packet->id.dst);
-		printf("dport: %u\n", packet->id.dport);
-		printf("sport: %u\n", packet->id.sport);
+		csp_print("pri : %u\n", packet->id.pri);
+		csp_print("dst: %u\n", packet->id.dst);
+		csp_print("src: %u\n", packet->id.src);
+		csp_print("dport: %u\n", packet->id.dport);
+		csp_print("sport: %u\n", packet->id.sport);
+		csp_print("flags: %u\n", packet->id.flags);
 
 		// Print the size of each field
 		// printf("Size of pri: %lu\n", sizeof(id.pri));
@@ -608,15 +1122,13 @@ int main(int argc, char * argv[]) {
 
 		// Print the total size of the struct
 		printf("Size of csp_id_t: %lu\n", sizeof(csp_id_t));
+		printf("Size of sendbit: %u\n", sizeof(send_msg));
 
 		/* 4. Set packet length */
 		packet->length = sizeof(send_msg) + sizeof(csp_id_t);
 
-		//  printf(" %06x\n", packet->data[5]);
-		//  printf(" %d %d\n", packet->data[4], packet->data[5]);
-
 		// for(int i=0 ;i<sizeof(packet->data);i++){
-		//   printf("%03x", packet->data[i]);
+		//   printf("%u", packet->data[i]);
 		// }
 
 		// Send and display the serialized packet (including header)
@@ -626,17 +1138,58 @@ int main(int argc, char * argv[]) {
 		// printf("packet : %u\n", packet->data[2]);
 		char hex_string[packet->length * 2 + 1];  // ต้องรองรับ 2 เท่าของขนาด packet + null terminator
 		packet_to_hex(packet->data, packet->length, hex_string);
+		char id_hex[64];  // Buffer สำหรับเก็บค่า hex ของ packet->id
+		sprintf(id_hex, "%02X%02X%02X%02X%02X%02X",
+				packet->id.pri,
+				packet->id.dst,
+				packet->id.src,
+				packet->id.dport,
+				packet->id.sport,
+				packet->id.flags);
 
+		// 2. ต่อ header ที่แปลงแล้วกับ hex_string
+		strcat(id_hex, hex_string);
 		printf("Hex String: %s\n", hex_string);
-		convert_hex_string_to_decimal(hex_string, packet);
-		printf("packet : %u\n", packet->data);
-		memcpy(&receive_msg, packet->data, packet->length);
-		csp_print("Type : %u\n", receive_msg.type);
-		csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
-		csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
+
+		// convert_hex_string_to_decimal(hex_string, packet);
+		// printf("packet : %u\n", packet->data);
+		// memcpy(&receive_msg, packet->data, packet->length);
+		// csp_print("Type : %u\n", receive_msg.type);
+		// csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
+		// csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
+
+		int uart0_filestream = open("/dev/serial0", O_WRONLY | O_NOCTTY);
+
+		if (uart0_filestream == -1) {
+			printf("Error - Unable to open UART.\n");
+			return -1;
+		}
+
+		struct termios options;
+		tcgetattr(uart0_filestream, &options);
+		options.c_cflag = B115200 | CS8 | CLOCAL | CREAD;
+		options.c_iflag = IGNPAR;
+		options.c_oflag = 0;
+		options.c_lflag = 0;
+		tcflush(uart0_filestream, TCIFLUSH);
+		tcsetattr(uart0_filestream, TCSANOW, &options);
+		// size_t hex_length = packet->length * 2+1; // ขนาดของ hex string
+		// size_t id_length = sizeof(id_hex);
+		// int count = write(uart0_filestream, hex_string, hex_length);
+		int count = write(uart0_filestream, hexString, sizeof(hexString));
+		printf("ID + Hex String: %s\n", hexString);
+		if (count < 0) {
+			printf("UART TX error.\n");
+		}
+
+		if (tcdrain(uart0_filestream) != 0) {
+			printf("Error draining UART.\n");
+		}
+
+		close(uart0_filestream);
 		/* 5. Send packet */
-		csp_send(conn, packet);
-		csp_close(conn);
+		// csp_send(conn, packet);
+		// csp_close(conn);
 		server();
 	}
 	/* Wait for execution to end (ctrl+c) */
