@@ -22,6 +22,9 @@ int router_start(void);
 /* Server port, the port the server listens on for incoming connections from the client. */
 #define SERVER_PORT 15
 
+#define BITMASKL16 0xFFFF0000
+#define BITMASKR16 0x0000FFFF
+
 #ifndef SENDER_ID
 #define SENDER_ID 1  // Default value if no value is passed during compilation
 #endif
@@ -37,6 +40,24 @@ Message send_msg = {0};
 Message receive_msg = {0};
 int CRCflags;
 
+uint16_t get_16bitLR(uint32_t val, int LR){
+	uint32_t bitmask = 0;
+	printf("LR : %d\n",LR);
+	if(LR == 0){
+		bitmask = BITMASKL16;
+	}
+	else if(LR == 1){
+		bitmask = BITMASKR16;
+	}
+	else{
+		return 0;
+	}
+	printf("bitmask : %u\n", bitmask);
+	printf("val : %u\n", val);
+	printf("val& : %u\n", val&bitmask);
+	return (val & bitmask);
+}
+
 void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, uint16_t * destination) {
 	size_t len = strlen(hex_string);
 	size_t chunk_count = 0;  // Counter for the number of 32-bit chunks processed
@@ -44,33 +65,40 @@ void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, u
 	size_t i = 0;
 	// for (size_t i = 0; i < 11; i += 2) {
 	char temp[9] = {0};  // Buffer for 8 hex characters + null terminator
+	char temp1[9] = {0};
+	char temp2[9] = {0};
+	char temp3[9] = {0};
+	char temp4[9] = {0};
+	char temp5[9] = {0};
+	char temp6[9] = {0};
+	char temp7[9] = {0};
+	char temp8[9] = {0};
+	char alltemp[50] = "";
 
 	strncpy(temp, &hex_string[i], 4);
 	// Convert the hex chunk to decimal considering little-endian order
 	unsigned int decimal_value = (unsigned int)strtoul(temp, NULL, 16);
 	// Print the decimal value
-	printf("32-bit chunk pri: %s -> Decimal: %u\n", temp, decimal_value);
+	//printf("32-bit chunk pri: %s -> Decimal: %u\n", temp, decimal_value);
 
 	unsigned int pri = (decimal_value >> 14);
 	pri = pri & 0X3;
-	// uint8_t pri_8bit = (uint8_t) pri;
-	printf("pri: : %u\n", pri);
-	memcpy(&packet->id.pri, &pri, sizeof(pri));
-	printf("pri: : %u\n", packet->id.pri);
+	memcpy(&packet->id.pri, &pri, sizeof(unsigned int));
 	unsigned int bitdst = decimal_value & 0X3FFF;
 	memcpy(&packet->id.dst, &bitdst, sizeof(unsigned int));
-	printf("des : %u\n", packet->id.dst);
+	//printf("des : %u\n", packet->id.dst);
 
 	*destination = packet->id.dst;
 
-	printf("dest : %u\n", destination);
-
+	if (*destination != SENDER_ID) {
+		return;
+	}
 	// // Copy 8 hex characters (32 bits) from the hex string
-	strncpy(temp, &hex_string[i + 4], 4);
+	strncpy(temp1, &hex_string[i + 4], 4);
 	// Convert the hex chunk to decimal considering little-endian order
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
+	decimal_value = (unsigned int)strtoul(temp1, NULL, 16);
 	// Print the decimal value
-	printf("32-bit chunk destination: %s -> Decimal: %u\n", temp, decimal_value);
+	//printf("32-bit chunk destination: %s -> Decimal: %u\n", temp1, decimal_value);
 
 	pri = (decimal_value >> 2);
 	pri = pri & 0X3FFF;
@@ -80,9 +108,9 @@ void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, u
 
 	/// memcpy(&packet->id.dst, &decimal_value, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 8], 4);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk source : %s -> Decimal: %u\n", temp, decimal_value);
+	strncpy(temp2, &hex_string[i + 8], 4);
+	decimal_value = (unsigned int)strtoul(temp2, NULL, 16);
+	//printf("32-bit chunk source : %s -> Decimal: %u\n", temp2, decimal_value);
 
 	unsigned int secdport = decimal_value >> 12;
 	secdport = secdport & 0XF;
@@ -96,9 +124,18 @@ void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, u
 	unsigned int flags = decimal_value & 0X3F;
 	memcpy(&packet->id.flags, &flags, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 12], 8);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk type : %s -> Decimal: %u\n", temp, decimal_value);
+	uint8_t hmac_flags = (flags >> 3) & 1;
+	//printf("hmac_flags : %u\n", hmac_flags);
+	uint8_t xtea_flags = (flags >> 2) & 1;
+	//printf("xtea_flags : %u\n", xtea_flags);
+	uint8_t rdp_flags = (flags >> 1) & 1;
+	//printf("rdp_flags : %u\n", rdp_flags);
+	uint8_t crc_flags = flags & 1;
+	//printf("crc_flags : %u\n", crc_flags);
+
+	strncpy(temp3, &hex_string[i + 12], 8);
+	decimal_value = (unsigned int)strtoul(temp3, NULL, 16);
+	//printf("32-bit chunk type : %s -> Decimal: %u\n", temp3, decimal_value);
 	memcpy(&receive_msg.type, &decimal_value, sizeof(unsigned int));
 
 	// strncpy(temp, &hex_string[i+20], 4);
@@ -106,32 +143,81 @@ void convert_header_to_decimal(const char * hex_string, csp_packet_t * packet, u
 	// printf("32-bit chunk: %s -> Decimal: %u\n", temp, decimal_value);
 	// memcpy(&packet->id.flags, &decimal_value, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 20], 8);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk mdid : %s -> Decimal: %u\n", temp, decimal_value);
+	strncpy(temp4, &hex_string[i + 20], 8);
+	decimal_value = (unsigned int)strtoul(temp4, NULL, 16);
+	//printf("32-bit chunk mdid : %s -> Decimal: %u\n", temp4, decimal_value);
 	memcpy(&receive_msg.mdid, &decimal_value, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 28], 8);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk req_id : %s -> Decimal: %u\n", temp, decimal_value);
+	strncpy(temp5, &hex_string[i + 28], 8);
+	decimal_value = (unsigned int)strtoul(temp5, NULL, 16);
+	//printf("32-bit chunk req_id : %s -> Decimal: %u\n", temp5, decimal_value);
 	memcpy(&receive_msg.req_id, &decimal_value, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 36], 8);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk param : %s -> Decimal: %u\n", temp, decimal_value);
+	strncpy(temp6, &hex_string[i + 36], 8);
+	decimal_value = (unsigned int)strtoul(temp6, NULL, 16);
+	//printf("32-bit chunk param : %s -> Decimal: %u\n", temp6, decimal_value);
 	memcpy(&receive_msg.param, &decimal_value, sizeof(unsigned int));
 
-	strncpy(temp, &hex_string[i + 44], 8);
-	decimal_value = (unsigned int)strtoul(temp, NULL, 16);
-	printf("32-bit chunk val : %s -> Decimal: %u\n", temp, decimal_value);
+	strncpy(temp7, &hex_string[i + 44], 8);
+	decimal_value = (unsigned int)strtoul(temp7, NULL, 16);
+	//printf("32-bit chunk val : %s -> Decimal: %u\n", temp7, decimal_value);
 	memcpy(&receive_msg.val, &decimal_value, sizeof(unsigned int));
 
+	strncpy(temp8, &hex_string[i + 52], 8);
+	decimal_value = (unsigned int)strtoul(temp8, NULL, 16);
+	//printf("32-bit chunk CRC : %s -> Decimal: %u\n", temp8, decimal_value);
+	if(decimal_value == 99999999){
+		printf("Reject CRC from receiver\n");
+	}
+	//memcpy(&receive_msg.val, &decimal_value, sizeof(unsigned int));
+
 	chunk_count++;  // Increment the chunk counter
-					//}
+
+	strcat(alltemp, temp);
+	strcat(alltemp, temp1);
+	strcat(alltemp, temp2);
+	strcat(alltemp, temp3);
+	strcat(alltemp, temp4);
+	strcat(alltemp, temp5);
+	strcat(alltemp, temp6);
+	strcat(alltemp, temp7);
+
+	//printf("Return packet : %s\n", alltemp);
+
+	if (hmac_flags == 1) {
+		printf("HMAC enable\n");
+	}
+
+	if (xtea_flags == 1) {
+		printf("XTEA enable\n");
+	}
+
+	if (rdp_flags == 1) {
+		printf("RDP enable\n");
+	}
+
+	unsigned long crc = crc32(0L, Z_NULL, 0);  // เริ่มต้นค่า CRC32
+	//printf("CRC32: %lx\n", crc);
+	if (crc_flags == 1) {
+		printf("CRC enable\n");
+		// คำนวณค่า CRC32 ของข้อมูล
+		crc = crc32(crc, alltemp, strlen(alltemp));
+		// แสดงผลค่า CRC32
+		printf("CRC32: %lX\n", crc);  // แสดงผลค่าเป็นเลขฐาน 16 (hex)
+
+		char crcString[20];
+		sprintf(crcString, "%lX", crc); 
+
+		if(strcmp(crcString, temp8) == 0){
+			printf("CRC equal!!\n");
+		}
+		else{
+			printf("CRC false!!\n");
+		}
+	}
 }
 
 void server(void) {
-	printf("HIIII\n");
 	while (1) {
 		int uart0_filestream = open("/dev/serial0", O_RDONLY | O_NOCTTY);
 
@@ -157,102 +243,126 @@ void server(void) {
 
 			if (rx_length > 0) {
 				rx_buffer[rx_length] = '\0';  // Null terminator
-				printf("Bytes read: %d\n", rx_length);
+				//printf("Bytes read: %d\n", rx_length);
 
 				// รวมข้อมูลที่รับเข้ากับ combined_buffer
 				strncat(combined_buffer, rx_buffer, sizeof(combined_buffer) - strlen(combined_buffer) - 1);
 
-				printf("Combined Received: %s\n", combined_buffer);  // แสดงข้อมูลที่รวม
+				//printf("Combined Received: %s\n", combined_buffer);  // แสดงข้อมูลที่รวม
 			} else if (rx_length < 0) {
 				printf("Error: %s\n", strerror(errno));
 			}
 
 			sleep(1);
-			printf("hi\n");
 		}
 		csp_packet_t * packet;
 		packet->id.pri = 0;
 		size_t receive_msg_size = sizeof(receive_msg);
 		// packet->length = sizeof(receive_msg);
 		//  ขนาดของ packet->data (ไม่สามารถรู้ได้เพราะเป็น pointer แต่ใช้ packet_length แทน)
-		printf("Size of receive_msg: %zu bytes\n", receive_msg_size);
-		printf("Size of packet->data (from packet_length): %d bytes\n", packet->length);
-		printf("Combined Received: %s\n", combined_buffer);
+		// printf("Size of receive_msg: %zu bytes\n", receive_msg_size);
+		// printf("Size of packet->data (from packet_length): %d bytes\n", packet->length);
+		printf("Return Packet : %s\n", combined_buffer);
 		uint16_t destination;
-		csp_print("pri : %u\n", packet->id.pri);
+		//csp_print("pri : %u\n", packet->id.pri);
 		convert_header_to_decimal(combined_buffer, packet, &destination);
+		if (destination != SENDER_ID) {
+				printf("False destination : %u\n", destination);
+				break;
+		}
 		// convert_hex_string_to_decimal(combined_buffer, packet);
-		printf("packet : %u\n", packet->data);
+		//printf("packet : %u\n", packet->data);
 		// printf("packet : %u\n", packet->data[0]);
 		// printf("packet : %u\n", packet->data[1]);
 		// printf("packet : %u\n", packet->data[2]);
 		// memcpy(&receive_msg, packet->data, packet->length);
-		csp_print("Type : %u\n", receive_msg.type);
-		csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
-		csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
-		csp_print("pri : %u\n", packet->id.pri);
-		csp_print("dst: %u\n", destination);
-		csp_print("src: %u\n", packet->id.src);
-		csp_print("dport: %u\n", packet->id.dport);
-		csp_print("sport: %u\n", packet->id.sport);
-		csp_print("flags: %u\n", packet->id.flags);
+		// csp_print("Type : %u\n", receive_msg.type);
+		// csp_print("Receive ModuleID : %u\n", receive_msg.mdid);
+		// csp_print("Receive TelemetryID : %u\n", receive_msg.req_id);
+		// csp_print("pri : %u\n", packet->id.pri);
+		// csp_print("dst: %u\n", destination);
+		// csp_print("src: %u\n", packet->id.src);
+		// csp_print("dport: %u\n", packet->id.dport);
+		// csp_print("sport: %u\n", packet->id.sport);
+		// csp_print("flags: %u\n", packet->id.flags);
 		// if(destination == SENDER_ID){
 		//     break;
 		// }
 
 		close(uart0_filestream);
-		printf("HI\n");
+		//printf("HI\n");
 		if (receive_msg.type == TC_RETURN) {
 			if (receive_msg.mdid == 1 && receive_msg.req_id == 1) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
-				printf("---- Reboot ----\n");
+				printf("Telecommand Val : %u\n", receive_msg.val);
+				if(receive_msg.val == 0){
+					printf("---- Reboot ----\n");
+				}
+				if(receive_msg.val == 1){
+					printf("---- Reboot in progress ----\n");
+				}
 				printf("-------------------------------------------\n");
-				continue;
+				break;;
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 2) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
-				printf("---- Shutdown ----\n");
+				printf("Telecommand Val : %u\n", receive_msg.val);
+				if(receive_msg.val == 0){
+					printf("---- Shutdown ----\n");
+				}
+				if(receive_msg.val == 2){
+					printf("---- Shutdown in progress ----\n");
+				}
 				printf("-------------------------------------------\n");
-				continue;
+				break;
 
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 3) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
-				printf("---- Cancel ----\n");
+				printf("Telecommand Val : %u\n", receive_msg.val);
+				if(receive_msg.val == 1){
+					printf("---- Cancel Reboot ----\n");
+				}
+				else if(receive_msg.val == 2){
+					printf("---- Cancel Shutdown ----\n");
+				}
+				else if(receive_msg.val == 0){
+					printf("---- Cancel Error - No shutdown/reboot now ----\n");
+				}
 				printf("-------------------------------------------\n");
-				continue;
+				break;
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 4) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
 				printf("---- New log ----\n");
 				printf("-------------------------------------------\n");
-				continue;
+				break;;
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 5) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
 				printf("---- Edit number of file ----\n");
 				printf("-------------------------------------------\n");
-				continue;
+				break;
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 6) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
 				printf("---- Edit size of file ----\n");
 				printf("-------------------------------------------\n");
-				continue;
+				break;
 			} else if (send_msg.mdid == 1 && send_msg.req_id == 7) {
 				printf("Type : %u\n", receive_msg.type);
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telecommand ID : %u\n", receive_msg.req_id);
 				printf("---- Edit period ----\n");
 				printf("-------------------------------------------\n");
-				continue;
+				break;
 			}
 		}
 		if (receive_msg.type == TM_RETURN) {
@@ -261,7 +371,7 @@ void server(void) {
 				printf("Module ID : %u\n", receive_msg.mdid);
 				printf("Telemetry ID : %u\n", receive_msg.req_id);
 				printf("Telemetry Parameter : %u\n", receive_msg.param);
-				printf("CPU Temperature: %d C\n", receive_msg.val);
+				printf("CPU Temperature (Raw): %d C\n", receive_msg.val);
 				float cpu_temp = receive_msg.val;
 				cpu_temp *= 0.001;
 				printf("CPU Temp: %.3f C\n", cpu_temp);
@@ -585,29 +695,29 @@ void toBinaryString(unsigned int num, char * binaryStr) {
 int main(int argc, char * argv[]) {
 	int ret = EXIT_SUCCESS;
 	int type, mdid, req_id;
-	uint16_t header1[16];
-	uint16_t header2[16];
-	uint16_t header3[16];
+	// uint16_t header1[16];
+	// uint16_t header2[16];
+	// uint16_t header3[16];
 	// aaa[0] --> aaa[15]
 
 	uint16_t bitpacket[15];
 
-	typedef struct {
-		uint8_t bittype[32];
-		uint8_t bitmdid[32];
-		uint8_t bitreq_id[32];
-		uint8_t bitparam[32];
-		uint8_t bitval[32];
-	} bitmsg;
+	// typedef struct {
+	// 	uint8_t bittype[32];
+	// 	uint8_t bitmdid[32];
+	// 	uint8_t bitreq_id[32];
+	// 	uint8_t bitparam[32];
+	// 	uint8_t bitval[32];
+	// } bitmsg;
 
-	bitmsg sendbit = {0};
+	//bitmsg sendbit = {0};
 	csp_print("Initialising CSP\n");
 
 	/* Init CSP */
 	csp_init();
 
 	/* Start router */
-	router_start();
+	//router_start();
 
 	// csp_iface_t * kiss_iface = NULL;
 	// csp_usart_conf_t uart_conf = {
@@ -631,11 +741,11 @@ int main(int argc, char * argv[]) {
 
 	csp_print("Client started\n");
 
-	csp_print("Connection table\r\n");
-	csp_conn_print_table();
+	// csp_print("Connection table\r\n");
+	// csp_conn_print_table();
 
-	csp_print("Interfaces\r\n");
-	csp_iflist_print();
+	// csp_print("Interfaces\r\n");
+	// csp_iflist_print();
 
 	while (1) {
 		// int result = csp_ping(server_address, 1000, 100, CSP_O_NONE);
@@ -790,19 +900,19 @@ int main(int argc, char * argv[]) {
 			} while (period < 0);
 			send_msg.param = (unsigned int)period;
 		}
-		printf("type size : %u\n", sizeof(send_msg.type));
+		//printf("type size : %u\n", sizeof(send_msg.type));
 
-		splitBits(send_msg.type, sendbit.bittype);
-		splitBits(send_msg.mdid, sendbit.bitmdid);
-		splitBits(send_msg.req_id, sendbit.bitreq_id);
-		splitBits(send_msg.param, sendbit.bitparam);
-		splitBits(send_msg.val, sendbit.bitval);
+		// splitBits(send_msg.type, sendbit.bittype);
+		// splitBits(send_msg.mdid, sendbit.bitmdid);
+		// splitBits(send_msg.req_id, sendbit.bitreq_id);
+		// splitBits(send_msg.param, sendbit.bitparam);
+		// splitBits(send_msg.val, sendbit.bitval);
 
-		printf("type : %u\n", sendbit.bittype[31]);
-		printf("mdid : %u\n", sendbit.bitmdid[31]);
-		printf("req_id : %u\n", sendbit.bitreq_id[31]);
-		printf("param : %u\n", sendbit.bitparam[31]);
-		printf("val : %u\n", sendbit.bitval[31]);
+		// printf("type : %u\n", sendbit.bittype[31]);
+		// printf("mdid : %u\n", sendbit.bitmdid[31]);
+		// printf("req_id : %u\n", sendbit.bitreq_id[31]);
+		// printf("param : %u\n", sendbit.bitparam[31]);
+		// printf("val : %u\n", sendbit.bitval[31]);
 
 		/* 2. Get packet buffer for message/data */
 		csp_packet_t * packet = csp_buffer_get(0);
@@ -820,8 +930,8 @@ int main(int argc, char * argv[]) {
 		packet->id.sport = 10;  // Source port
 		packet->id.flags |= (CSP_FHMAC | CSP_FCRC32);
 
-		char binaryStr[17];  // สตริงเก็บเลขฐาน 2 ขนาด 17 (16 บิต + null terminator)
-		unsigned int binaryValue = 0;
+		// char binaryStr[17];  // สตริงเก็บเลขฐาน 2 ขนาด 17 (16 บิต + null terminator)
+		// unsigned int binaryValue = 0;
 
 		// toBinaryString(packet->id.dst, binaryStr); // แปลงเป็นเลขฐาน 2 และเก็บใน binaryStr
 		// printf("Binary representation of packet->id.dst (%u): %s\n", packet->id.dst, binaryStr);
@@ -880,12 +990,12 @@ int main(int argc, char * argv[]) {
 		shifthd1 = packet->id.pri << 14;
 		combinedValue = shifthd1 | (packet->id.dst & 0x3FFF);  // ใช้ & กับ 0x3FFF เพื่อดึงเฉพาะ 14 บิต
 		bitpacket[0] = combinedValue;
-		printf("packet[0] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[0] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[0] as hexadecimal: 0x%04X\n", bitpacket[0]);
+		//printf("packet[0] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[0] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[0] as hexadecimal: 0x%04X\n", bitpacket[0]);
 
 		unsigned int combinedValue2;
 		unsigned int shiftedhd2;
@@ -895,12 +1005,12 @@ int main(int argc, char * argv[]) {
 		// เก็บค่า combinedValue ทั้งหมดใน packet[2] โดยตรง
 		bitpacket[1] = combinedValue2;
 
-		printf("packet[1] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[1] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[1] as hexadecimal: 0x%04X\n", bitpacket[1]);
+		//printf("packet[1] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[1] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[1] as hexadecimal: 0x%04X\n", bitpacket[1]);
 
 		unsigned int combinedValue3;
 		unsigned int shiftedhd3;
@@ -911,43 +1021,45 @@ int main(int argc, char * argv[]) {
 		// เก็บค่า combinedValue ทั้งหมดใน packet[2] โดยตรง
 		bitpacket[2] = combinedValue3;
 
-		printf("packet[2] as binary: ");
+		//printf("packet[2] as binary: ");
 		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[2] >> i) & 1);  // แสดงบิตทีละบิต
+			//printf("%u", (bitpacket[2] >> i) & 1);  // แสดงบิตทีละบิต
 			if (i == 0 && (bitpacket[2] >> i) & 1 == 1) {
-				printf("\nCRC enable\n");
+				//printf("\nCRC enable\n");
 				CRCflags = 1;
 			}
 		}
-		printf("\n");
-		printf("packet[2] as hexadecimal: 0x%04X\n", bitpacket[2]);
+		//printf("\n");
+		//printf("packet[2] as hexadecimal: 0x%04X\n", bitpacket[2]);
 
 		unsigned int combinedValue4;
 		hexfirst(send_msg.type, &combinedValue4);
+		//get_16bitLR(send_msg.type, 0);
+		//printf("Left : %u\n",get_16bitLR(send_msg.type, 0));
 
 		// unsigned int shifttype;
 		// shifttype = send_msg.type >>16;
 		// unsigned int combinedValue4 = shifttype & 0xFFFF;
 		bitpacket[3] = combinedValue4;
 
-		printf("packet[3] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[3] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[3] as hexadecimal: 0x%04X\n", bitpacket[3]);
+		//printf("packet[3] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[3] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[3] as hexadecimal: 0x%04X\n", bitpacket[3]);
 
 		// shifttype = send_msg.type & 0xFFFF;
 
 		hexsec(send_msg.type, &combinedValue4);
 
 		bitpacket[4] = combinedValue4;
-		printf("packet[4] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[4] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[4] as hexadecimal: 0x%04X\n", bitpacket[4]);
+		//printf("packet[4] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[4] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[4] as hexadecimal: 0x%04X\n", bitpacket[4]);
 
 		// unsigned int shiftmdid;
 		// shiftmdid = send_msg.type >>16;
@@ -963,80 +1075,81 @@ int main(int argc, char * argv[]) {
 		hexfirst(send_msg.mdid, &combinedValue4);
 		bitpacket[5] = combinedValue4;
 
-		printf("packet[5] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[5] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[5] as hexadecimal: 0x%04X\n", bitpacket[5]);
+		//printf("packet[5] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[5] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[5] as hexadecimal: 0x%04X\n", bitpacket[5]);
 
 		hexsec(send_msg.mdid, &combinedValue4);
 
 		bitpacket[6] = combinedValue4;
-		printf("packet[6] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[6] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[6] as hexadecimal: 0x%04X\n", bitpacket[6]);
+		//printf("packet[6] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[6] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[6] as hexadecimal: 0x%04X\n", bitpacket[6]);
 
 		hexfirst(send_msg.req_id, &combinedValue4);
 		bitpacket[7] = combinedValue4;
 
-		printf("packet[7] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[7] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[7] as hexadecimal: 0x%04X\n", bitpacket[7]);
+		//printf("packet[7] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[7] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[7] as hexadecimal: 0x%04X\n", bitpacket[7]);
 
 		hexsec(send_msg.req_id, &combinedValue4);
 
 		bitpacket[8] = combinedValue4;
-		printf("packet[8] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[8] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[8] as hexadecimal: 0x%04X\n", bitpacket[8]);
+		//printf("packet[8] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[8] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[8] as hexadecimal: 0x%04X\n", bitpacket[8]);
 
 		hexfirst(send_msg.param, &combinedValue4);
 		bitpacket[9] = combinedValue4;
-
-		printf("packet[9] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[9] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[9]);
+		//printf("Left : %u\n",get_16bitLR(send_msg.param, 0));
+		//printf("packet[9] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[9] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[9]);
 
 		hexsec(send_msg.param, &combinedValue4);
+		//printf("Right : %u\n",get_16bitLR(send_msg.param, 1));
 
 		bitpacket[10] = combinedValue4;
-		printf("packet[10] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[10] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[10]);
+		//printf("packet[10] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[10] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[9] as hexadecimal: 0x%04X\n", bitpacket[10]);
 		hexfirst(send_msg.val, &combinedValue4);
 		bitpacket[11] = combinedValue4;
 
-		printf("packet[11] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[11] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[11] as hexadecimal: 0x%04X\n", bitpacket[11]);
+		//printf("packet[11] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[11] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[11] as hexadecimal: 0x%04X\n", bitpacket[11]);
 		hexsec(send_msg.val, &combinedValue4);
 
 		bitpacket[12] = combinedValue4;
-		printf("packet[12] as binary: ");
-		for (int i = 15; i >= 0; i--) {
-			printf("%u", (bitpacket[12] >> i) & 1);  // แสดงบิตทีละบิต
-		}
-		printf("\n");
-		printf("packet[12] as hexadecimal: 0x%04X\n", bitpacket[12]);
+		//printf("packet[12] as binary: ");
+		// for (int i = 15; i >= 0; i--) {
+		// 	//printf("%u", (bitpacket[12] >> i) & 1);  // แสดงบิตทีละบิต
+		// }
+		//printf("\n");
+		//printf("packet[12] as hexadecimal: 0x%04X\n", bitpacket[12]);
 		// shifttype = send_msg.type & 0xFFFF;
 		// bitpacket[4] = shifttype;
 
@@ -1061,22 +1174,22 @@ int main(int argc, char * argv[]) {
 			strcat(hexString, temp);              // ต่อสตริง
 		}
 
-		printf("Combined hexadecimal string: %s\n", hexString);
+		//printf("Combined hexadecimal string: %s\n", hexString);
 
 		unsigned long crc = crc32(0L, Z_NULL, 0);  // เริ่มต้นค่า CRC32
-		printf("CRC32: %lx\n", crc);
+		//printf("CRC32: %lx\n", crc);
 		if (CRCflags == 1) {
-			printf("\nCRC enable\n");
+			//printf("\nCRC enable\n");
 			// คำนวณค่า CRC32 ของข้อมูล
 			crc = crc32(crc, hexString, strlen(hexString));
 			// แสดงผลค่า CRC32
-			printf("CRC32: %lX\n", crc);  // แสดงผลค่าเป็นเลขฐาน 16 (hex)
+			//printf("CRC32: %lX\n", crc);  // แสดงผลค่าเป็นเลขฐาน 16 (hex)
 		}
 		char crcString[20];
 		sprintf(crcString, "%lX", crc);  // แปลงเป็นเลขฐาน 16 (hexadecimal)
 
 		strcat(hexString, crcString);
-		printf("Combined hexadecimal + CRC32 : %s\n", hexString);
+		printf("Packet send : %s\n", hexString);
 
 		// unsigned int shiftedhd3;
 		// unsigned int combinedValue3;
@@ -1100,17 +1213,17 @@ int main(int argc, char * argv[]) {
 		/* 3. Copy data to packet */
 		memcpy(packet->data, &send_msg, sizeof(send_msg));
 
-		for (int i = 0; i < sizeof(packet->data); i++) {
-			printf("%u", packet->data[i]);
-		}
+		// for (int i = 0; i < sizeof(packet->data); i++) {
+		// 	printf("%u", packet->data[i]);
+		// }
 		// memcmp(packet->id, &packet->id,sizeof(csp_id_t));
-		printf("packet : %u\n", packet->data);
-		csp_print("pri : %u\n", packet->id.pri);
-		csp_print("dst: %u\n", packet->id.dst);
-		csp_print("src: %u\n", packet->id.src);
-		csp_print("dport: %u\n", packet->id.dport);
-		csp_print("sport: %u\n", packet->id.sport);
-		csp_print("flags: %u\n", packet->id.flags);
+		//printf("packet : %u\n", packet->data);
+		// csp_print("pri : %u\n", packet->id.pri);
+		// csp_print("dst: %u\n", packet->id.dst);
+		// csp_print("src: %u\n", packet->id.src);
+		// csp_print("dport: %u\n", packet->id.dport);
+		// csp_print("sport: %u\n", packet->id.sport);
+		// csp_print("flags: %u\n", packet->id.flags);
 
 		// Print the size of each field
 		// printf("Size of pri: %lu\n", sizeof(id.pri));
@@ -1121,8 +1234,8 @@ int main(int argc, char * argv[]) {
 		// printf("Size of sport: %lu\n", sizeof(id.sport));
 
 		// Print the total size of the struct
-		printf("Size of csp_id_t: %lu\n", sizeof(csp_id_t));
-		printf("Size of sendbit: %u\n", sizeof(send_msg));
+		// printf("Size of csp_id_t: %lu\n", sizeof(csp_id_t));
+		// printf("Size of sendbit: %u\n", sizeof(send_msg));
 
 		/* 4. Set packet length */
 		packet->length = sizeof(send_msg) + sizeof(csp_id_t);
@@ -1136,20 +1249,20 @@ int main(int argc, char * argv[]) {
 		// printf("packet : %u\n", packet->data[0]);
 		// printf("packet : %u\n", packet->data[1]);
 		// printf("packet : %u\n", packet->data[2]);
-		char hex_string[packet->length * 2 + 1];  // ต้องรองรับ 2 เท่าของขนาด packet + null terminator
-		packet_to_hex(packet->data, packet->length, hex_string);
-		char id_hex[64];  // Buffer สำหรับเก็บค่า hex ของ packet->id
-		sprintf(id_hex, "%02X%02X%02X%02X%02X%02X",
-				packet->id.pri,
-				packet->id.dst,
-				packet->id.src,
-				packet->id.dport,
-				packet->id.sport,
-				packet->id.flags);
+		// char hex_string[packet->length * 2 + 1];  // ต้องรองรับ 2 เท่าของขนาด packet + null terminator
+		// packet_to_hex(packet->data, packet->length, hex_string);
+		// char id_hex[64];  // Buffer สำหรับเก็บค่า hex ของ packet->id
+		// sprintf(id_hex, "%02X%02X%02X%02X%02X%02X",
+		// 		packet->id.pri,
+		// 		packet->id.dst,
+		// 		packet->id.src,
+		// 		packet->id.dport,
+		// 		packet->id.sport,
+		// 		packet->id.flags);
 
-		// 2. ต่อ header ที่แปลงแล้วกับ hex_string
-		strcat(id_hex, hex_string);
-		printf("Hex String: %s\n", hex_string);
+		// // 2. ต่อ header ที่แปลงแล้วกับ hex_string
+		// strcat(id_hex, hex_string);
+		// printf("Hex String: %s\n", hex_string);
 
 		// convert_hex_string_to_decimal(hex_string, packet);
 		// printf("packet : %u\n", packet->data);
@@ -1177,7 +1290,7 @@ int main(int argc, char * argv[]) {
 		// size_t id_length = sizeof(id_hex);
 		// int count = write(uart0_filestream, hex_string, hex_length);
 		int count = write(uart0_filestream, hexString, sizeof(hexString));
-		printf("ID + Hex String: %s\n", hexString);
+		//printf("ID + Hex String: %s\n", hexString);
 		if (count < 0) {
 			printf("UART TX error.\n");
 		}
@@ -1185,7 +1298,7 @@ int main(int argc, char * argv[]) {
 		if (tcdrain(uart0_filestream) != 0) {
 			printf("Error draining UART.\n");
 		}
-
+		printf("-------------------------------------------\n");
 		close(uart0_filestream);
 		/* 5. Send packet */
 		// csp_send(conn, packet);
